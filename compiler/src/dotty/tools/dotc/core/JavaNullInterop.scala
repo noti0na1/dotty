@@ -6,6 +6,7 @@ import dotty.tools.dotc.core.StdNames.{jnme, nme}
 import dotty.tools.dotc.core.Symbols.{Symbol, defn, _}
 import dotty.tools.dotc.core.Types.{AndType, AppliedType, LambdaType, MethodType, OrType, PolyType, Type, TypeAlias, TypeMap, TypeParamRef, TypeRef}
 import NullOpsDecorator._
+import scala.io.Source
 
 /** This module defines methods to interpret types of Java symbols, which are implicitly nullable in Java,
  *  as Scala types, which are explicitly nullable.
@@ -66,7 +67,8 @@ object JavaNullInterop {
       // Constructors: params are nullified, but the result type isn't.
       paramsOnlyPolicy(_.isConstructor),
       // Java enum instances: don't nullify.
-      NoOpPolicy(_.isAllOf(Flags.JavaEnumValue))
+      NoOpPolicy(_.isAllOf(Flags.JavaEnumValue)),
+      stdLibPolicy(sym, tp)
     )
 
     whitelist.find(_.isApplicable(sym)) match {
@@ -81,6 +83,12 @@ object JavaNullInterop {
     def isApplicable(sym: Symbol): Boolean
     /** Nullifies `tp` according to the policy. Should call `isApplicable` first. */
     def apply(tp: Type): Type
+  }
+
+  /** A policy that never applies. */
+  private object FalsePolicy extends NullifyPolicy {
+    override def isApplicable(sym: Symbol): Boolean = false
+    override def apply(tp: Type): Type = throw new IllegalStateException("Should not have called apply on this policy!");
   }
 
   /** A policy that leaves the passed-in type unchanged. */
@@ -134,6 +142,118 @@ object JavaNullInterop {
   private def nullifyType(tpe: Type)(implicit ctx: Context): Type = {
     val nullMap = new JavaNullMap(alreadyNullable = false)
     nullMap(tpe)
+  }
+
+  // TODO(abeln): do we need this to be multithread-safe?
+  private lazy val nullStats: Map[String, ClassStats] = readNullStats()
+
+  private case class ClassStats(name: String, fields: Seq[FieldStats], methods: Seq[MethodStats]) {
+    private def find(sym: Symbol, tp: Type, nameToDesc: Seq[(String, String)])(implicit ctx: Context): Option[Int] = {
+      val name = sym.name.show
+      // println(s"looking up ${name} desc = ${sym.descriptor}")
+      sym.descriptor match {
+        case Some(desc) =>
+          nameToDesc.indexOf((name, desc.mangledString)) match {
+            case -1 => None
+            case idx => Some(idx)
+          }
+        case None => None
+      }
+    }
+
+    def getField(sym: Symbol, tp: Type)(implicit ctx: Context): Option[FieldStats] = {
+      find(sym, tp, fields.map(fs => (fs.name, fs.desc))) match {
+        case Some(idx) => Some(fields(idx))
+        case None => None
+      }
+    }
+
+    def getMethod(sym: Symbol, tp: Type)(implicit ctx: Context): Option[MethodStats] = {
+      find(sym, tp, methods.map(ms => (ms.name, ms.desc))) match {
+        case Some(idx) => Some(methods(idx))
+        case None => None
+      }
+    }
+  }
+
+  private case class FieldStats(name: String, desc: String, nnTpe: Boolean)
+  private case class MethodStats(name: String, desc: String, nnRet: Boolean, nnParams: Seq[Int])
+
+
+  // TODO(abeln): add better error handling when reading stats
+  private def readNullStats(): Map[String, ClassStats] = {
+    val lines = Source.fromFile("explicit-nulls-meta.txt").getLines.map(_.trim).toArray
+    var pos = 0
+
+    def readFieldStats(): Seq[FieldStats] = {
+      val numFields = lines(pos).toInt
+      pos += 1
+      (0 until numFields).map { _ =>
+        val name = lines(pos)
+        pos += 1
+        val desc = lines(pos)
+        pos += 1
+        val nonNullRet = lines(pos).toBoolean
+        pos += 1
+        FieldStats(name, desc, nonNullRet)
+      }
+    }
+
+    def readMethodStats(): Seq[MethodStats] = {
+      val numMethods = lines(pos).toInt
+      pos += 1
+      (0 until numMethods).map { _ =>
+        val name = lines(pos)
+        pos += 1
+        val desc = lines(pos)
+        pos += 1
+        val nonNullRet = lines(pos).toBoolean
+        pos += 1
+        val numParams = lines(pos).toInt
+        pos += 1
+        val nonNullParams = (0 until numParams) map { _ =>
+          val index = lines(pos).toInt
+          pos += 1
+          index
+        }
+        val res = MethodStats(name, desc, nonNullRet, nonNullParams)
+        // println(res)
+        res
+      }
+    }
+
+    val numClasses = lines(pos).toInt
+    pos += 1
+    (0 until numClasses).map { _ =>
+      val name = lines(pos)
+      pos += 1
+      val fstats = readFieldStats()
+      val mstats = readMethodStats()
+      (name, ClassStats(name, fstats, mstats))
+    }.toMap
+  }
+
+  private def stdLibPolicy(sym: Symbol, tp: Type)(implicit ctx: Context): NullifyPolicy = {
+    val ownerName = sym.owner.showFullName
+    if (!nullStats.contains(ownerName)) return FalsePolicy
+    val stats = nullStats(ownerName)
+    if (sym.is(Flags.Method)) {
+      stats.getMethod(sym, tp) match {
+        case Some(mstats) =>
+          def triggerAndLog(s: Symbol): Boolean = {
+//            if (mstats.nnRet) println(s">>> ${sym.name.show} with type ${tp.show}")
+            s == sym
+          }
+          MethodPolicy(triggerAndLog, /*mstats.nnParams*/ Seq.empty, mstats.nnRet)
+        case None => FalsePolicy
+      }
+    } else {
+      stats.getField(sym, tp) match {
+        case Some(fstas) =>
+          NoOpPolicy(_ == sym)
+        case None => FalsePolicy
+      }
+    }
   }
 
   /** A type map that adds `| JavaNull`.
