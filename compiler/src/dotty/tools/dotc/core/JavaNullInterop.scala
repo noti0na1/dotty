@@ -193,9 +193,9 @@ object JavaNullInterop {
         pos += 1
         val desc = lines(pos)
         pos += 1
-        val nonNullRet = lines(pos).toBoolean
-        pos += 1
-        FieldStats(name, desc, nonNullRet)
+        // val nonNullRet = lines(pos).toBoolean
+        // pos += 1
+        FieldStats(name, desc, true /* nnRet */)
       }
     }
 
@@ -207,8 +207,9 @@ object JavaNullInterop {
         pos += 1
         val desc = lines(pos)
         pos += 1
-        val nonNullRet = lines(pos).toBoolean
-        pos += 1
+        // val nonNullRet = lines(pos).toBoolean
+        // pos += 1
+        /*
         val numParams = lines(pos).toInt
         pos += 1
         val nonNullParams = (0 until numParams) map { _ =>
@@ -216,7 +217,8 @@ object JavaNullInterop {
           pos += 1
           index
         }
-        val res = MethodStats(name, desc, nonNullRet, nonNullParams)
+        */
+        val res = MethodStats(name, desc, true /* nonNullRet */, Seq())
         // println(res)
         res
       }
