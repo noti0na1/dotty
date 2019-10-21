@@ -70,6 +70,17 @@ object JavaNullInterop {
       NoOpPolicy(_.isAllOf(Flags.JavaEnumValue)),
       stdLibPolicy(sym, tp)
     )
+    ++ (if (ctx.settings.YJavaInteropDontNullifyOutermost.value) {
+      Seq(
+        // Assume that all methods return non-nullable values.
+        paramsOnlyPolicy(_.is(Flags.Method)),
+        // Assume that all fields (static or not) contain non-nullable values.
+        // We assume that if a symbol is not a method then it is a field.
+        FieldPolicy(!_.is(Flags.Method))
+      )
+    } else {
+      Seq(FalsePolicy)
+    })
 
     whitelist.find(_.isApplicable(sym)) match {
       case Some(pol) => pol(tp)
@@ -96,6 +107,20 @@ object JavaNullInterop {
     override def isApplicable(sym: Symbol): Boolean = trigger(sym)
 
     override def apply(tp: Type): Type = tp
+  }
+
+  /** A policy that nullifies a field's type, but not at the outermost level.
+   *  e.g. given the type `Array[String]`, return `Array[String|JavaNull]`, as opposed to `Array[String|JavaNull]|JavaNull`.
+   */
+  private case class FieldPolicy(trigger: Symbol => Boolean)(implicit ctx: Context) extends NullifyPolicy {
+    override def isApplicable(sym: Symbol): Boolean = {
+      assert(!sym.is(Flags.Method), s"FieldPolicy applies only to non-methods")
+      trigger(sym)
+    }
+
+    override def apply(tp: Type): Type = {
+      nullifyType(tp).stripJavaNull
+    }
   }
 
   /** A policy for handling a method or poly.

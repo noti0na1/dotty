@@ -161,6 +161,7 @@ class ScalaSettings extends Settings.SettingGroup {
   // Extremely experimental language features
   val YnoKindPolymorphism: Setting[Boolean] = BooleanSetting("-Yno-kind-polymorphism", "Enable kind polymorphism (see https://dotty.epfl.ch/docs/reference/kind-polymorphism.html). Potentially unsound.")
   val YexplicitNulls: Setting[Boolean] = BooleanSetting("-Yexplicit-nulls", "Make reference types non-nullable. Nullable types can be expressed with unions: e.g. String|Null.")
+  val YJavaInteropDontNullifyOutermost: Setting[Boolean] = BooleanSetting("-Yjava-interop-dont-nullify-outermost", "If this and -Yexplicit-nulls are set, we do not nullify the return type of fields and methods at the outermost level.")
 
   /** Area-specific debug output */
   val YexplainLowlevel: Setting[Boolean] = BooleanSetting("-Yexplain-lowlevel", "When explaining type errors, show types at a lower level.")
