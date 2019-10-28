@@ -307,7 +307,7 @@ trait Applications extends Compatibility {
     }
 
     /** A flag signalling that the typechecking the application was so far successful */
-    private[this] var _ok = true
+    private var _ok = true
 
     def ok: Boolean = _ok
     def ok_=(x: Boolean): Unit = _ok = x
@@ -686,9 +686,9 @@ trait Applications extends Compatibility {
   extends Application(methRef, fun.tpe, args, resultType) {
     type TypedArg = Tree
     def isVarArg(arg: Trees.Tree[T]): Boolean = untpd.isWildcardStarArg(arg)
-    private[this] var typedArgBuf = new mutable.ListBuffer[Tree]
-    private[this] var liftedDefs: mutable.ListBuffer[Tree] = null
-    private[this] var myNormalizedFun: Tree = fun
+    private var typedArgBuf = new mutable.ListBuffer[Tree]
+    private var liftedDefs: mutable.ListBuffer[Tree] = null
+    private var myNormalizedFun: Tree = fun
     init()
 
     def addArg(arg: Tree, formal: Type): Unit =
@@ -858,22 +858,20 @@ trait Applications extends Compatibility {
 
       /** Type application where arguments come from prototype, and no implicits are inserted */
       def simpleApply(fun1: Tree, proto: FunProto)(implicit ctx: Context): Tree = {
-        val ctx1 = if (ctx.explicitNulls) {
+        implicit val ctxWithFacts: Context = if (ctx.explicitNulls) {
           // The flow facts of lhs are cached in the FlowFactsOnTree attachment
           val facts = fun1.getAttachment(Typer.FlowFactsOnTree) match {
             case Some(fs) => fs
             case None =>
-              val fs = FlowTyper.inferWithinCond(fun1)
+              val fs = FlowTyper.inferWithinCond(fun1)(ctx)
               fun1.putAttachment(Typer.FlowFactsOnTree, fs)
               fs
           }
           if (facts.isEmpty) ctx else ctx.fresh.addFlowFacts(facts)
-        } else {
-          ctx
         }
+        else ctx
 
-        // Separate into a function so we can pass the updated context.
-        def proc(implicit ctx: Context): tpd.Tree = methPart(fun1).tpe match {
+        methPart(fun1).tpe match {
           case funRef: TermRef =>
             val app =
               if (proto.allArgTypesAreCurrent())
@@ -884,8 +882,6 @@ trait Applications extends Compatibility {
           case _ =>
             handleUnexpectedFunType(tree, fun1)
         }
-
-        proc(ctx1)
       }
 
       /** Try same application with an implicit inserted around the qualifier of the function

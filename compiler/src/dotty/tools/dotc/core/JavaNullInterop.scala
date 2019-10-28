@@ -3,8 +3,8 @@ package dotty.tools.dotc.core
 import dotty.tools.dotc.core.Contexts.Context
 import dotty.tools.dotc.core.Flags.JavaDefined
 import dotty.tools.dotc.core.StdNames.{jnme, nme}
-import dotty.tools.dotc.core.Symbols.{Symbol, defn, _}
-import dotty.tools.dotc.core.Types.{AndType, AppliedType, LambdaType, MethodType, OrType, PolyType, Type, TypeAlias, TypeMap, TypeParamRef, TypeRef}
+import dotty.tools.dotc.core.Symbols._
+import dotty.tools.dotc.core.Types._
 import NullOpsDecorator._
 import scala.io.Source
 
@@ -57,117 +57,26 @@ object JavaNullInterop {
     assert(ctx.explicitNulls)
     assert(sym.is(JavaDefined), "can only nullify java-defined members")
 
-    // A list of "policies" that special-case certain members.
-    // The policies should be disjoint: we use the first one that is applicable.
-    val whitelist: Seq[NullifyPolicy] = Seq(
-      // The `TYPE` field in every class: don't nullify.
-      NoOpPolicy(_.name == nme.TYPE_),
-      // The `toString` method: don't nullify the return type.
-      paramsOnlyPolicy(_.name == nme.toString_),
-      // Constructors: params are nullified, but the result type isn't.
-      paramsOnlyPolicy(_.isConstructor),
-      // Java enum instances: don't nullify.
-      NoOpPolicy(_.isAllOf(Flags.JavaEnumValue)),
-      stdLibPolicy(sym, tp)
-    )
-    ++ (if (ctx.settings.YJavaInteropDontNullifyOutermost.value) {
-      Seq(
-        // Assume that all methods return non-nullable values.
-        paramsOnlyPolicy(_.is(Flags.Method)),
-        // Assume that all fields (static or not) contain non-nullable values.
-        // We assume that if a symbol is not a method then it is a field.
-        FieldPolicy(!_.is(Flags.Method))
-      )
-    } else {
-      Seq(FalsePolicy)
-    })
-
-    whitelist.find(_.isApplicable(sym)) match {
-      case Some(pol) => pol(tp)
-      case None => nullifyType(tp) // default case: nullify everything
-    }
+    // Some special cases when nullifying the type
+    if (sym.name == nme.TYPE_ || sym.isAllOf(Flags.JavaEnumValue))
+      // Don't nullify the `TYPE` field in every class and Java enum instances
+      tp
+    else if (sym.name == nme.toString_ || sym.isConstructor || hasNotNullAnnot(sym))
+      // Don't nullify the return type of the `toString` method.
+      // Don't nullify the return type of constructors.
+      // Don't nullify the return type of methods with a not-null annotation.
+      nullifyExceptReturnType(tp)
+    else if (ctx.settings.YJavaInteropDontNullifyOutermost.value) 
+      nullifyExceptReturnType(tp)
+    else if (isInNotNullStdLibList(sym, tp))
+      nullifyExceptReturnType(tp)
+    else
+      // Otherwise, nullify everything
+      nullifyType(tp)
   }
 
-  /** A policy that special cases the handling of some symbol. */
-  private sealed trait NullifyPolicy {
-    /** Whether the policy applies to `sym`. */
-    def isApplicable(sym: Symbol): Boolean
-    /** Nullifies `tp` according to the policy. Should call `isApplicable` first. */
-    def apply(tp: Type): Type
-  }
-
-  /** A policy that never applies. */
-  private object FalsePolicy extends NullifyPolicy {
-    override def isApplicable(sym: Symbol): Boolean = false
-    override def apply(tp: Type): Type = throw new IllegalStateException("Should not have called apply on this policy!");
-  }
-
-  /** A policy that leaves the passed-in type unchanged. */
-  private case class NoOpPolicy(trigger: Symbol => Boolean) extends NullifyPolicy {
-    override def isApplicable(sym: Symbol): Boolean = trigger(sym)
-
-    override def apply(tp: Type): Type = tp
-  }
-
-  /** A policy that nullifies a field's type, but not at the outermost level.
-   *  e.g. given the type `Array[String]`, return `Array[String|JavaNull]`, as opposed to `Array[String|JavaNull]|JavaNull`.
-   */
-  private case class FieldPolicy(trigger: Symbol => Boolean)(implicit ctx: Context) extends NullifyPolicy {
-    override def isApplicable(sym: Symbol): Boolean = {
-      assert(!sym.is(Flags.Method), s"FieldPolicy applies only to non-methods")
-      trigger(sym)
-    }
-
-    override def apply(tp: Type): Type = {
-      nullifyType(tp).stripJavaNull
-    }
-  }
-
-  /** A policy for handling a method or poly.
-   *  @param trigger determines whether the policy applies to a given symbol.
-   *  @param nnParams the indices of the method parameters that should be considered "non-null" (should not be nullified).
-   *  @param nnRes whether the result type should be nullified.
-   *
-   *  For the purposes of both `nnParams` and `nnRes`, when a parameter or return type is not nullified,
-   *  this applies only at the top level. e.g. suppose we have a Java result type `Array[String]` and `nnRes` is set.
-   *  Scala will see `Array[String|JavaNull]`; the array element type is still nullified.
-   */
-  private case class MethodPolicy(trigger: Symbol => Boolean,
-                                  nnParams: Seq[Int],
-                                  nnRes: Boolean)(implicit ctx: Context) extends TypeMap with NullifyPolicy {
-    override def isApplicable(sym: Symbol): Boolean = trigger(sym)
-
-    private def spare(tp: Type): Type = {
-      nullifyType(tp).stripNull
-    }
-
-    override def apply(tp: Type): Type = {
-      tp match {
-        case ptp: PolyType =>
-          derivedLambdaType(ptp)(ptp.paramInfos, this(ptp.resType))
-        case mtp: MethodType =>
-          val paramTpes = mtp.paramInfos.zipWithIndex.map {
-            case (paramInfo, index) =>
-              // TODO(abeln): the sequence lookup can be optimized, because the indices
-              // in it appear in increasing order.
-              if (nnParams.contains(index)) spare(paramInfo) else nullifyType(paramInfo)
-          }
-          val resTpe = if (nnRes) spare(mtp.resType) else nullifyType(mtp.resType)
-          derivedLambdaType(mtp)(paramTpes, resTpe)
-      }
-    }
-  }
-
-  /** A policy that nullifies only method parameters (but not result types). */
-  private def paramsOnlyPolicy(trigger: Symbol => Boolean)(implicit ctx: Context): MethodPolicy = {
-    MethodPolicy(trigger, nnParams = Seq.empty, nnRes = true)
-  }
-
-  /** Nullifies a Java type by adding `| JavaNull` in the relevant places. */
-  private def nullifyType(tpe: Type)(implicit ctx: Context): Type = {
-    val nullMap = new JavaNullMap(alreadyNullable = false)
-    nullMap(tpe)
-  }
+  private def hasNotNullAnnot(sym: Symbol)(implicit ctx: Context): Boolean =
+    ctx.definitions.NotNullAnnots.exists(nna => sym.unforcedAnnotation(nna).isDefined)
 
   // TODO(abeln): do we need this to be multithread-safe?
   private lazy val nullStats: Map[String, ClassStats] = readNullStats()
@@ -200,7 +109,6 @@ object JavaNullInterop {
       }
     }
   }
-
   private case class FieldStats(name: String, desc: String, nnTpe: Boolean)
   private case class MethodStats(name: String, desc: String, nnRet: Boolean, nnParams: Seq[Int])
 
@@ -260,38 +168,50 @@ object JavaNullInterop {
     }.toMap
   }
 
-  private def stdLibPolicy(sym: Symbol, tp: Type)(implicit ctx: Context): NullifyPolicy = {
+  private def isInNotNullStdLibList(sym: Symbol, tp: Type)(implicit ctx: Context): Boolean = {
     val ownerName = sym.owner.showFullName
-    if (!nullStats.contains(ownerName)) return FalsePolicy
+    if (!nullStats.contains(ownerName)) return false
+    
     val stats = nullStats(ownerName)
-    if (sym.is(Flags.Method)) {
+    if (sym.is(Flags.Method))
       stats.getMethod(sym, tp) match {
-        case Some(mstats) =>
-          def triggerAndLog(s: Symbol): Boolean = {
-//            if (mstats.nnRet) println(s">>> ${sym.name.show} with type ${tp.show}")
-            s == sym
-          }
-          MethodPolicy(triggerAndLog, /*mstats.nnParams*/ Seq.empty, mstats.nnRet)
-        case None => FalsePolicy
+        case Some(_) => true
+        case None => false
       }
-    } else {
+    else 
       stats.getField(sym, tp) match {
-        case Some(fstas) =>
-          NoOpPolicy(_ == sym)
-        case None => FalsePolicy
-      }
+        case Some(_) => true
+        case None => false
     }
   }
 
-  /** A type map that adds `| JavaNull`.
-   *  @param alreadyNullable whether the type being mapped is already nullable (at the outermost level).
-   *                         This is needed so that `JavaNullMap(A | B)` gives back `(A | B) | JavaNull`,
-   *                         instead of `(A|JavaNull | B|JavaNull) | JavaNull`.
+  /** If tp is a MethodType, the parameters and the inside of return type are nullified,
+   *  but the result return type is not nullable.
+   *  If tp is a type of a field, the inside of the type is nullified,
+   *  but the result type is not nullable.
    */
-  private class JavaNullMap(var alreadyNullable: Boolean)(implicit ctx: Context) extends TypeMap {
+  private def nullifyExceptReturnType(tp: Type)(implicit ctx: Context): Type =
+    new JavaNullMap(true)(ctx)(tp)
+
+  /** Nullifies a Java type by adding `| JavaNull` in the relevant places. */
+  private def nullifyType(tp: Type)(implicit ctx: Context): Type =
+    new JavaNullMap(false)(ctx)(tp)
+
+  /** A type map that implements the nullification function on types. Given a Java-sourced type, this adds `| JavaNull`
+   *  in the right places to make the nulls explicit in Scala.
+   *
+   *  @param outermostLevelAlreadyNullable whether this type is already nullable at the outermost level.
+   *                                       For example, `Array[String]|JavaNull` is already nullable at the
+   *                                       outermost level, but `Array[String|JavaNull]` isn't.
+   *                                       If this parameter is set to true, then the types of fields, and the return
+   *                                       types of methods will not be nullified.
+   *                                       This is useful for e.g. constructors, and also so that `A & B` is nullified
+   *                                       to `(A & B) | JavaNull`, instead of `(A|JavaNull & B|JavaNull) | JavaNull`.
+   */
+  private class JavaNullMap(var outermostLevelAlreadyNullable: Boolean)(implicit ctx: Context) extends TypeMap {
     /** Should we nullify `tp` at the outermost level? */
-    def needsTopLevelNull(tp: Type): Boolean = {
-      !alreadyNullable && (tp match {
+    def needsNull(tp: Type): Boolean =
+      !outermostLevelAlreadyNullable && (tp match {
         case tp: TypeRef =>
           // We don't modify value types because they're non-nullable even in Java.
           !tp.symbol.isValueClass &&
@@ -305,35 +225,46 @@ object JavaNullInterop {
           !tp.isRef(defn.RepeatedParamClass)
         case _ => true
       })
-    }
 
     /** Should we nullify the type arguments to the given generic `tp`?
      *  We only nullify the inside of Scala-defined generics.
      *  This is because Java classes are _all_ nullified, so both `java.util.List[String]` and
      *  `java.util.List[String|Null]` contain nullable elements.
      */
-    def needsNullArgs(tp: AppliedType): Boolean = {
-      !tp.classSymbol.is(JavaDefined)
-    }
+    def needsNullArgs(tp: AppliedType): Boolean = !tp.classSymbol.is(JavaDefined)
 
     override def apply(tp: Type): Type = {
+      // Fast version of Type::toJavaNullableUnion that doesn't check whether the type
+      // is already a union.
+      def toJavaNullableUnion(tpe: Type): Type = OrType(tpe, defn.JavaNullAliasType)
+
       tp match {
-        case tp: TypeRef if needsTopLevelNull(tp) => tp.toJavaNullableUnion
+        case tp: TypeRef if needsNull(tp) => toJavaNullableUnion(tp)
         case appTp @ AppliedType(tycons, targs) =>
+          val oldOutermostNullable = outermostLevelAlreadyNullable
+          outermostLevelAlreadyNullable = false
           val targs2 = if (needsNullArgs(appTp)) targs map this else targs
+          outermostLevelAlreadyNullable = oldOutermostNullable
           val appTp2 = derivedAppliedType(appTp, tycons, targs2)
-          if (needsTopLevelNull(tycons)) appTp2.toJavaNullableUnion else appTp2
-        case tp: LambdaType => mapOver(tp)
+          if (needsNull(tycons)) toJavaNullableUnion(appTp2) else appTp2
+        case ptp: PolyType =>
+          derivedLambdaType(ptp)(ptp.paramInfos, this(ptp.resType))
+        case mtp: MethodType =>
+          val oldOutermostNullable = outermostLevelAlreadyNullable
+          outermostLevelAlreadyNullable = false
+          val paramInfos2 = mtp.paramInfos map this
+          outermostLevelAlreadyNullable = oldOutermostNullable
+          derivedLambdaType(mtp)(paramInfos2, this(mtp.resType))
         case tp: TypeAlias => mapOver(tp)
-        case tp @ AndType(tp1, tp2) =>
+        case tp: AndType =>
           // nullify(A & B) = (nullify(A) & nullify(B)) | JavaNull, but take care not to add
           // duplicate `JavaNull`s at the outermost level inside `A` and `B`.
-          alreadyNullable = true
-          derivedAndType(tp, this(tp1), this(tp2)).toJavaNullableUnion
-        case tp @ OrType(tp1, tp2) if !tp.isJavaNullableUnion =>
-          alreadyNullable = true
-          derivedOrType(tp, this(tp1), this(tp2)).toJavaNullableUnion
-        case tp: TypeParamRef if needsTopLevelNull(tp) => tp.toJavaNullableUnion
+          outermostLevelAlreadyNullable = true
+          toJavaNullableUnion(derivedAndType(tp, this(tp.tp1), this(tp.tp2)))
+        case tp: TypeParamRef if needsNull(tp) => toJavaNullableUnion(tp)
+        // In all other cases, return the type unchanged.
+        // In particular, if the type is a ConstantType, then we don't nullify it because it is the
+        // type of a final non-nullable field.
         case _ => tp
       }
     }

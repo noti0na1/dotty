@@ -442,7 +442,7 @@ object Flags {
     Scala2ExistentialCommon, Mutable, Opaque, Touched, JavaStatic,
     OuterOrCovariant, LabelOrContravariant, CaseAccessor,
     Extension, NonMember, Implicit, Given, Permanent, Synthetic,
-    SuperAccessorOrScala2x, Inline)
+    SuperAccessorOrScala2x, Inline, Macro)
 
   /** Flags that are not (re)set when completing the denotation, or, if symbol is
    *  a top-level class or object, when completing the denotation once the class
@@ -451,7 +451,11 @@ object Flags {
    */
   val AfterLoadFlags: FlagSet = commonFlags(
     FromStartFlags, AccessFlags, Final, AccessorOrSealed, LazyOrTrait, SelfName, JavaDefined,
-    Enum, StableRealizable) // TODO: change to JavaEnumValue in future, blocked by possible bug in FlagSet union
+    // We would like to add JavaEnumValue to this set so that we can correctly
+    // detect it in JavaNullInterop. However, JavaEnumValue is not initialized at this
+    // point, so we just make sure that all the "primitive" flags contained in JavaEnumValue
+    // are mentioned here as well.
+    Enum, StableRealizable)
 
   /** A value that's unstable unless complemented with a Stable flag */
   val UnstableValueFlags: FlagSet = Mutable | Method
@@ -526,7 +530,7 @@ object Flags {
   val DeferredOrLazyOrMethod: FlagSet        = Deferred | Lazy | Method
   val DeferredOrTermParamOrAccessor: FlagSet = Deferred | ParamAccessor | TermParam           // term symbols without right-hand sides
   val DeferredOrTypeParam: FlagSet           = Deferred | TypeParam                           // type symbols without right-hand sides
-  val EnumValue: FlagSet                     = Enum | JavaStatic | StableRealizable           // A Scala enum value
+  val EnumValue: FlagSet                     = Enum | StableRealizable           // A Scala enum value
   val StableOrErased: FlagSet                = Erased | StableRealizable                      // Assumed to be pure
   val ExtensionMethod: FlagSet               = Extension | Method
   val FinalOrInline: FlagSet                 = Final | Inline

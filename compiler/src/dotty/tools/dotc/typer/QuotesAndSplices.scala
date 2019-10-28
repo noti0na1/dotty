@@ -207,7 +207,7 @@ trait QuotesAndSplices {
                     x => t.resType.subst(t, x).toFunctionType())
               case t => t
             }
-            val bindingExprTpe = AppliedType(defn.QuotedMatchingBindingClass.typeRef, bindingType :: Nil)
+            val bindingExprTpe = AppliedType(defn.QuotedMatchingSymClass.typeRef, bindingType :: Nil)
             assert(ddef.name.startsWith("$"))
             val bindName = ddef.name.toString.stripPrefix("$").toTermName
             val sym = ctx0.newPatternBoundSymbol(bindName, bindingExprTpe, ddef.span)
@@ -342,7 +342,7 @@ trait QuotesAndSplices {
     val typeBindingsTuple = tpd.tupleTypeTree(typeBindings.values.toList)
 
     val replaceBindingsInTree = new TreeMap {
-      private[this] var bindMap = Map.empty[Symbol, Symbol]
+      private var bindMap = Map.empty[Symbol, Symbol]
       override def transform(tree: tpd.Tree)(implicit ctx: Context): tpd.Tree =
         tree match {
           case tree: Bind =>
@@ -354,7 +354,7 @@ trait QuotesAndSplices {
           case _ =>
             super.transform(tree).withType(replaceBindingsInType(tree.tpe))
         }
-      private[this] val replaceBindingsInType = new ReplaceBindings {
+      private val replaceBindingsInType = new ReplaceBindings {
         override def apply(tp: Type): Type = tp match {
           case tp: TermRef => bindMap.get(tp.termSymbol).fold[Type](tp)(_.typeRef)
           case tp => super.apply(tp)
