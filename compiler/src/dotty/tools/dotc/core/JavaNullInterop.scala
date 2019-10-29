@@ -66,9 +66,7 @@ object JavaNullInterop {
       // Don't nullify the return type of constructors.
       // Don't nullify the return type of methods with a not-null annotation.
       nullifyExceptReturnType(tp)
-    else if (ctx.settings.YJavaInteropDontNullifyOutermost.value) 
-      nullifyExceptReturnType(tp)
-    else if (isInNotNullStdLibList(sym, tp))
+    else if (ctx.settings.YJavaInteropDontNullifyOutermost.value || isInNotNullStdLibList(sym, tp))
       nullifyExceptReturnType(tp)
     else
       // Otherwise, nullify everything
@@ -171,14 +169,13 @@ object JavaNullInterop {
   private def isInNotNullStdLibList(sym: Symbol, tp: Type)(implicit ctx: Context): Boolean = {
     val ownerName = sym.owner.showFullName
     if (!nullStats.contains(ownerName)) return false
-    
     val stats = nullStats(ownerName)
     if (sym.is(Flags.Method))
       stats.getMethod(sym, tp) match {
         case Some(_) => true
         case None => false
       }
-    else 
+    else
       stats.getField(sym, tp) match {
         case Some(_) => true
         case None => false
