@@ -438,7 +438,7 @@ object Symbols {
       myCoord = c
     }
 
-    private[this] var myDefTree: Tree = null
+    private var myDefTree: Tree = null
 
     /** The tree defining the symbol at pickler time, EmptyTree if none was retained */
     def defTree: Tree =
@@ -458,8 +458,8 @@ object Symbols {
       denot.isOneOf(InlineOrProxy)      // need to keep inline info
 
     /** The last denotation of this symbol */
-    private[this] var lastDenot: SymDenotation = _
-    private[this] var checkedPeriod: Period = Nowhere
+    private var lastDenot: SymDenotation = _
+    private var checkedPeriod: Period = Nowhere
 
     private[core] def invalidateDenotCache(): Unit = { checkedPeriod = Nowhere }
 
@@ -727,7 +727,7 @@ object Symbols {
 
     type TreeOrProvider = tpd.TreeProvider | tpd.Tree
 
-    private[this] var myTree: TreeOrProvider = tpd.EmptyTree
+    private var myTree: TreeOrProvider = tpd.EmptyTree
 
     /** If this is a top-level class and `-Yretain-trees` (or `-from-tasty`) is set.
       * Returns the TypeDef tree (possibly wrapped inside PackageDefs) for this class, otherwise EmptyTree.
@@ -784,7 +784,7 @@ object Symbols {
       if (assocFile != null || this.owner.is(PackageClass) || this.isEffectiveRoot) assocFile
       else super.associatedFile
 
-    private[this] var mySource: SourceFile = NoSource
+    private var mySource: SourceFile = NoSource
 
     final def sourceOfClass(implicit ctx: Context): SourceFile = {
       if (!mySource.exists && !denot.is(Package))
@@ -909,6 +909,6 @@ object Symbols {
     override def toString: String = value.asScala.toString()
   }
 
-  @forceInline def newMutableSymbolMap[T]: MutableSymbolMap[T] =
+  inline def newMutableSymbolMap[T]: MutableSymbolMap[T] =
     new MutableSymbolMap(new java.util.IdentityHashMap[Symbol, T]())
 }

@@ -108,14 +108,14 @@ class Typer extends Namer
    *  Note: It would be more proper to move importedFromRoot into typedIdent.
    *  We should check that this has no performance degradation, however.
    */
-  private[this] var unimported: Set[Symbol] = Set()
+  private var unimported: Set[Symbol] = Set()
 
   /** Temporary data item for single call to typed ident:
    *  This symbol would be found under Scala2 mode, but is not
    *  in dotty (because dotty conforms to spec section 2
    *  wrt to package member resolution but scalac doe not).
    */
-  private[this] var foundUnderScala2: Type = NoType
+  private var foundUnderScala2: Type = NoType
 
   // Overridden in derived typers
   def newLikeThis: Typer = new Typer
@@ -823,9 +823,8 @@ class Typer extends Namer
     val (thenCtx, elseCtx) = if (ctx.explicitNulls) {
       val Inferred(ifTrue, ifFalse) = FlowTyper.inferFromCond(cond1)
       (ctx.fresh.addFlowFacts(ifTrue), ctx.fresh.addFlowFacts(ifFalse))
-    } else {
-      (ctx, ctx)
     }
+    else (ctx, ctx)
 
     if (tree.elsep.isEmpty) {
       val thenp1 = typed(tree.thenp, defn.UnitType)(thenCtx)
@@ -856,12 +855,18 @@ class Typer extends Namer
       case _: WildcardType => untpd.TypeTree()
       case _ => untpd.TypeTree(tp)
     }
+    def interpolateWildcards = new TypeMap {
+      def apply(t: Type): Type = t match
+        case WildcardType(bounds: TypeBounds) =>
+          newTypeVar(apply(bounds.orElse(TypeBounds.empty)).bounds)
+        case _ => mapOver(t)
+    }
     pt.stripTypeVar.dealias match {
       case pt1 if defn.isNonRefinedFunction(pt1) =>
         // if expected parameter type(s) are wildcards, approximate from below.
         // if expected result type is a wildcard, approximate from above.
         // this can type the greatest set of admissible closures.
-        (pt1.argTypesLo.init, typeTree(pt1.argTypesHi.last))
+        (pt1.argTypesLo.init, typeTree(interpolateWildcards(pt1.argTypesHi.last)))
       case SAMType(sam @ MethodTpe(_, formals, restpe)) =>
         (formals,
          if (sam.isResultDependent)
@@ -885,10 +890,8 @@ class Typer extends Namer
       case tree: untpd.FunctionWithMods => tree.mods.flags
       case _ => EmptyFlags
     }
-    if (funFlags.is(Erased) && args.isEmpty) {
-      ctx.error("An empty function cannot not be erased", tree.sourcePos)
-      funFlags = funFlags &~ Erased
-    }
+
+    assert(!funFlags.is(Erased) || !args.isEmpty, "An empty function cannot not be erased")
 
     val funCls = defn.FunctionClass(args.length,
         isContextual = funFlags.is(Given), isErased = funFlags.is(Erased))
@@ -1276,13 +1279,7 @@ class Typer extends Namer
   }
 
   def typedThrow(tree: untpd.Throw)(implicit ctx: Context): Tree = {
-    val pt = if (ctx.explicitNulls) {
-      // `throw null` is valid Scala code
-      OrType(defn.ThrowableType, defn.NullType)
-    } else {
-      defn.ThrowableType
-    }
-    val expr1 = typed(tree.expr, pt)
+    val expr1 = typed(tree.expr, defn.ThrowableType)
     Throw(expr1).withSpan(tree.span)
   }
 
@@ -1765,7 +1762,6 @@ class Typer extends Namer
         checkEnum(cdef, cls, firstParent)
       }
       val cdef1 = assignType(cpy.TypeDef(cdef)(name, impl1), cls)
-      checkVariance(cdef1)
 
       val reportDynamicInheritance =
         ctx.phase.isTyper &&
@@ -1781,7 +1777,6 @@ class Typer extends Namer
 
       // check value class constraints
       checkDerivedValueClass(cls, body1)
-
 
       // Temporarily set the typed class def as root tree so that we have at least some
       // information in the IDE in case we never reach `SetRootTree`.
@@ -1852,9 +1847,6 @@ class Typer extends Namer
       typed(untpd.New(untpd.TypedSplice(firstParent), Nil)) :: otherParents
     else parents
   }
-
-  /** Overridden in retyper */
-  def checkVariance(tree: Tree)(implicit ctx: Context): Unit = VarianceChecker.check(tree)
 
   def localDummy(cls: ClassSymbol, impl: untpd.Template)(implicit ctx: Context): Symbol =
     ctx.newLocalDummy(cls, impl.span)
@@ -1928,7 +1920,6 @@ class Typer extends Namer
         if (ctx.owner ne tree.owner) tree1.changeOwner(tree.owner, ctx.owner)
         else tree1
     }
-
 
   def typedAsFunction(tree: untpd.PostfixOp, pt: Type)(implicit ctx: Context): Tree = {
     val untpd.PostfixOp(qual, Ident(nme.WILDCARD)) = tree
@@ -2134,17 +2125,19 @@ class Typer extends Namer
         }
 
         val ifpt = defn.asImplicitFunctionType(pt)
-        val result = if (ifpt.exists &&
-            xtree.isTerm &&
-            !untpd.isContextualClosure(xtree) &&
-            !ctx.mode.is(Mode.Pattern) &&
-            !ctx.isAfterTyper &&
-            !ctx.isInlineContext)
-          makeContextualFunction(xtree, ifpt)
-        else xtree match {
-          case xtree: untpd.NameTree => typedNamed(xtree, pt)
-          case xtree => typedUnnamed(xtree)
-        }
+        val result =
+          if ifpt.exists
+             && xtree.isTerm
+             && !untpd.isContextualClosure(xtree)
+             && !ctx.mode.is(Mode.Pattern)
+             && !ctx.isAfterTyper
+             && !ctx.isInlineContext
+          then
+            makeContextualFunction(xtree, ifpt)
+          else xtree match
+            case xtree: untpd.NameTree => typedNamed(xtree, pt)
+            case xtree => typedUnnamed(xtree)
+
         simplify(result, pt, locked)
     }
   }
