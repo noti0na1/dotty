@@ -100,4 +100,7 @@ object language:
     * @see [[https://scalacenter.github.io/scala-3-migration-guide/docs/scala-3-migration-mode]]
     */
   object `3.1`
+
+  /** Unsafe Nulls fot Explicit Nulls */
+  object unsafeNulls
 end language
