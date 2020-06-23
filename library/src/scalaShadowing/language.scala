@@ -257,4 +257,6 @@ object language {
   object `3.0`
   object `3.1-migration`
   object `3.1`
+
+  object unsafeNulls
 }

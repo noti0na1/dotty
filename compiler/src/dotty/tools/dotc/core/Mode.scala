@@ -116,4 +116,7 @@ object Mode {
 
   /** Are we typechecking the rhs of an extension method? */
   val InExtensionMethod: Mode = newMode(26, "InExtensionMethod")
+
+  /** Unsafe Null Conversion Mode */
+  val UnsafeNullConversion: Mode = newMode(27, "UnsafeNullConversion")
 }
