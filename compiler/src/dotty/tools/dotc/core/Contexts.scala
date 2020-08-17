@@ -478,6 +478,8 @@ object Contexts {
     /** Is the explicit nulls option set? */
     def explicitNulls: Boolean = base.settings.YexplicitNulls.value
 
+    def explicitNullsJavaCompatible: Boolean = base.settings.YexplicitNullsJavaCompatible.value
+
     /** Initialize all context fields, except typerState, which has to be set separately
      *  @param  outer   The outer context
      *  @param  origin  The context from which fields are copied

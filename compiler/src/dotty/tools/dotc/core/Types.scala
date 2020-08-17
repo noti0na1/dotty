@@ -739,10 +739,14 @@ object Types {
         go(l).meet(go(r), pre, safeIntersection = ctx.base.pendingMemberSearches.contains(name))
 
       def goOr(tp: OrType) = tp match {
-        case OrNull(tp1) if config.Feature.enabled(nme.unsafeNulls) =>
+        case OrNull(tp1) if ctx.explicitNullsJavaCompatible || config.Feature.enabled(nme.unsafeNulls) =>
           // Selecting `name` from a type `T | Null` is like selecting `name` from `T`, if
           // unsafeNulls is enabled. This can throw at runtime, but we trade soundness for usability.
-          tp1.findMember(name, pre.stripNull, required, excluded)
+          val d = tp1.findMember(name, pre.stripNull, required, excluded)
+          if config.Feature.enabled(nme.unsafeNulls) ||
+            (ctx.explicitNullsJavaCompatible && d.symbol.is(JavaDefined))
+          then d
+          else go(tp.join)
         case _ =>
           // we need to keep the invariant that `pre <: tp`. Branch `union-types-narrow-prefix`
           // achieved that by narrowing `pre` to each alternative, but it led to merge errors in

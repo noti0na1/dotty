@@ -889,7 +889,14 @@ trait Applications extends Compatibility {
       def simpleApply(fun1: Tree, proto: FunProto)(using Context): Tree =
         methPart(fun1).tpe match {
           case funRef: TermRef =>
-            val app = ApplyTo(tree, fun1, funRef, proto, pt)
+            val argsCtx =
+              if ctx.explicitNulls && ctx.explicitNullsJavaCompatible then
+                if funRef.symbol.is(JavaDefined) then
+                  ctx.addMode(Mode.UnsafeNullConversion)
+                else
+                  ctx.retractMode(Mode.UnsafeNullConversion)
+              else ctx
+            val app = ApplyTo(tree, fun1, funRef, proto, pt)(using argsCtx)
             convertNewGenericArray(
               postProcessByNameArgs(funRef, app).computeNullable())
           case _ =>

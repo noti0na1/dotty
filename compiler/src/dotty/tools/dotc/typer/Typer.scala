@@ -3509,12 +3509,11 @@ class Typer extends Namer
         }
       }
 
-      def tryUnsafeNullConver(fail: => Tree): Tree =
+      def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
         // If explicitNulls and unsafeNulls are enabled, and
-        if ctx.explicitNulls && config.Feature.enabled(nme.unsafeNulls) &&
-          tree.tpe.isUnsafeConvertable(pt) then {
-            tree.cast(pt)
-          }
+        if ctx.mode.is(Mode.UnsafeNullConversion) && pt.isValueType &&
+          tree.tpe.isUnsafeConvertable(pt)
+        then tree.cast(pt)
         else fail
 
       def cannotFind(failure: SearchFailure) =
@@ -3527,21 +3526,31 @@ class Typer extends Namer
           tree
         else recover(failure.reason)
 
-      if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
-        if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
-          ctx.error(em"the result of an implicit conversion must be more specific than $pt", tree.sourcePos)
-        val searchCtx = if config.Feature.enabled(nme.unsafeNulls)
-          then ctx.addMode(Mode.UnsafeNullConversion)
-          else ctx
-        tree.tpe match {
-          case OrNull(tpe1) if ctx.explicitNulls && config.Feature.enabled(nme.unsafeNulls) =>
-            searchTree(tree.cast(tpe1)) { _ =>
-              searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))(using searchCtx)
-            }(using searchCtx)
-          case _ =>
-            searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))(using searchCtx)
-        }
-      else tryUnsafeNullConver(recover(NoMatchingImplicits))
+      def process(using Context): Tree = {
+        if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
+          if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
+            report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
+          tree.tpe match {
+            case OrNull(tpe1) if ctx.explicitNulls && config.Feature.enabled(nme.unsafeNulls) =>
+              searchTree(tree.cast(tpe1)) { _ =>
+                searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
+              }
+            case _ =>
+              searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
+          }
+        else tryUnsafeNullConver(recover(NoMatchingImplicits))
+      }
+
+      val javaCompatibleCall = ctx.explicitNullsJavaCompatible && (tree match {
+        case Apply(_, _) => tree.symbol.is(JavaDefined)
+        case _ => false
+      })
+      val searchCtx =
+        if ctx.explicitNulls && (javaCompatibleCall || config.Feature.enabled(nme.unsafeNulls)) then
+          ctx.addMode(Mode.UnsafeNullConversion)
+        else ctx
+
+      process(using searchCtx)
     }
 
     def adaptType(tp: Type): Tree = {

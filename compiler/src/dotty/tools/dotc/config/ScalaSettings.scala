@@ -170,6 +170,7 @@ class ScalaSettings extends Settings.SettingGroup {
   // Extremely experimental language features
   val YnoKindPolymorphism: Setting[Boolean] = BooleanSetting("-Yno-kind-polymorphism", "Disable kind polymorphism.")
   val YexplicitNulls: Setting[Boolean] = BooleanSetting("-Yexplicit-nulls", "Make reference types non-nullable. Nullable types can be expressed with unions: e.g. String|Null.")
+  val YexplicitNullsJavaCompatible: Setting[Boolean] = BooleanSetting("-Yexplicit-nulls-java", "explicit-nulls-java")
   val YerasedTerms: Setting[Boolean] = BooleanSetting("-Yerased-terms", "Allows the use of erased terms.")
   val YcheckInit: Setting[Boolean] = BooleanSetting("-Ycheck-init", "Check initialization of objects")
 
