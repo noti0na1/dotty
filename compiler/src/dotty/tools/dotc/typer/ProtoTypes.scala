@@ -141,7 +141,7 @@ object ProtoTypes {
 
     // equals comes from case class; no need to redefine
   end IgnoredProto
-  
+
   final class CachedIgnoredProto(ignored: Type) extends IgnoredProto(ignored)
 
   object IgnoredProto:
@@ -370,10 +370,15 @@ object ProtoTypes {
         if wideFormal eq formal then ctx
         else ctx.withNotNullInfos(ctx.notNullInfos.retractMutables)
       val locked = ctx.typerState.ownedVars
-      val targ = cacheTypedArg(arg,
-        typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
-        force = true)
-      typer.adapt(targ, wideFormal, locked)
+      val nullConver = ctx.mode.is(Mode.UnsafeNullConversion)
+      if nullConver then
+        val targ = typer.typedUnadapted(arg, WildcardType, locked)(using argCtx.retractMode(Mode.UnsafeNullConversion))
+        typer.adapt(targ, wideFormal, locked)
+      else
+        val targ = cacheTypedArg(arg,
+          typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
+          force = true)
+        typer.adapt(targ, wideFormal, locked)
     }
 
     /** The type of the argument `arg`, or `NoType` if `arg` has not been typed before
