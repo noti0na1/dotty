@@ -912,6 +912,24 @@ class Typer extends Namer
       pt, localSyms(stats1))
   }
 
+  def typedUnadaptedWithBlock(tree: untpd.Tree, pt: Type, locked: TypeVars)(using Context): Tree = {
+    tree match {
+      case block: untpd.Block =>
+        val (stats1, exprCtx) = withoutMode(Mode.Pattern) {
+          typedBlockStats(block.stats)(using ctx.fresh.setNewScope)
+        }
+        val expr1 = typedUnadaptedWithBlock(block.expr, pt.dropIfProto, locked)(using exprCtx)
+        val expr1Tpe = expr1.tpe
+        ensureNoLocalRefs(
+          cpy.Block(block)(stats1, expr1)
+            .withType(expr1Tpe)
+            .withNotNullInfo(stats1.foldRight(expr1.notNullInfo)(_.notNullInfo.seq(_))),
+          expr1Tpe, localSyms(stats1))
+      case _ =>
+        typedUnadapted(tree, pt, locked)
+    }
+  }
+
   def escapingRefs(block: Tree, localSyms: => List[Symbol])(using Context): List[NamedType] = {
     lazy val locals = localSyms.toSet
     block.tpe.namedPartsWith(tp => locals.contains(tp.symbol) && !tp.isErroneous)

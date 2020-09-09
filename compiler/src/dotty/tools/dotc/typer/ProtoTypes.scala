@@ -370,15 +370,14 @@ object ProtoTypes {
         if wideFormal eq formal then ctx
         else ctx.withNotNullInfos(ctx.notNullInfos.retractMutables)
       val locked = ctx.typerState.ownedVars
-      val nullConver = ctx.mode.is(Mode.UnsafeNullConversion)
-      if nullConver then
-        val targ = typer.typedUnadapted(arg, WildcardType, locked)(using argCtx.retractMode(Mode.UnsafeNullConversion))
-        typer.adapt(targ, wideFormal, locked)
+      val targ = if ctx.mode.is(Mode.UnsafeNullConversion) then
+        typer.typedUnadaptedWithBlock(arg, wideFormal, locked)
+          (using argCtx.retractMode(Mode.UnsafeNullConversion))
       else
-        val targ = cacheTypedArg(arg,
+        cacheTypedArg(arg,
           typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
           force = true)
-        typer.adapt(targ, wideFormal, locked)
+      typer.adapt(targ, wideFormal, locked)
     }
 
     /** The type of the argument `arg`, or `NoType` if `arg` has not been typed before
