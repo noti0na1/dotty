@@ -912,24 +912,6 @@ class Typer extends Namer
       pt, localSyms(stats1))
   }
 
-  def typedUnadaptedWithBlock(tree: untpd.Tree, pt: Type, locked: TypeVars)(using Context): Tree = {
-    tree match {
-      case block: untpd.Block =>
-        val (stats1, exprCtx) = withoutMode(Mode.Pattern) {
-          typedBlockStats(block.stats)(using ctx.fresh.setNewScope)
-        }
-        val expr1 = typedUnadaptedWithBlock(block.expr, pt.dropIfProto, locked)(using exprCtx)
-        val expr1Tpe = expr1.tpe
-        ensureNoLocalRefs(
-          cpy.Block(block)(stats1, expr1)
-            .withType(expr1Tpe)
-            .withNotNullInfo(stats1.foldRight(expr1.notNullInfo)(_.notNullInfo.seq(_))),
-          expr1Tpe, localSyms(stats1))
-      case _ =>
-        typedUnadapted(tree, pt, locked)
-    }
-  }
-
   def escapingRefs(block: Tree, localSyms: => List[Symbol])(using Context): List[NamedType] = {
     lazy val locals = localSyms.toSet
     block.tpe.namedPartsWith(tp => locals.contains(tp.symbol) && !tp.isErroneous)
@@ -3452,13 +3434,23 @@ class Typer extends Namer
         return tpd.Block(tree1 :: Nil, Literal(Constant(())))
       }
 
+      val adaptWithUnsafeNullConver =
+        ctx.explicitNulls && (
+          config.Feature.enabled(nme.unsafeNulls) ||
+          ctx.mode.is(Mode.UnsafeNullConversion))
+
       // convert function literal to SAM closure
       tree match {
         case closure(Nil, id @ Ident(nme.ANON_FUN), _)
         if defn.isFunctionType(wtp) && !defn.isFunctionType(pt) =>
-          pt match {
+          val pt1 =
+            if adaptWithUnsafeNullConver then
+              pt.stripNull
+            else pt
+          pt1 match {
             case SAMType(sam)
-            if wtp <:< sam.toFunctionType() =>
+            if wtp <:< sam.toFunctionType() ||
+              (adaptWithUnsafeNullConver && wtp.isUnsafeConvertable(sam.toFunctionType())) =>
               // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
               // but this prevents case blocks from implementing polymorphic partial functions,
               // since we do not know the result parameter a priori. Have to wait until the
@@ -3544,7 +3536,17 @@ class Typer extends Namer
           tree
         else recover(failure.reason)
 
-      def process(using Context): Tree = {
+      val javaCompatibleCall = ctx.explicitNullsJavaCompatible && (tree match {
+        case Apply(_, _) => tree.symbol.is(JavaDefined)
+        case _ => false
+      })
+
+      val searchCtx =
+        if ctx.explicitNulls && (javaCompatibleCall || config.Feature.enabled(nme.unsafeNulls)) then
+          ctx.addMode(Mode.UnsafeNullConversion)
+        else ctx
+
+      inContext(searchCtx) {
         if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
           if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
             report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
@@ -3558,17 +3560,6 @@ class Typer extends Namer
           }
         else tryUnsafeNullConver(recover(NoMatchingImplicits))
       }
-
-      val javaCompatibleCall = ctx.explicitNullsJavaCompatible && (tree match {
-        case Apply(_, _) => tree.symbol.is(JavaDefined)
-        case _ => false
-      })
-      val searchCtx =
-        if ctx.explicitNulls && (javaCompatibleCall || config.Feature.enabled(nme.unsafeNulls)) then
-          ctx.addMode(Mode.UnsafeNullConversion)
-        else ctx
-
-      process(using searchCtx)
     }
 
     def adaptType(tp: Type): Tree = {
