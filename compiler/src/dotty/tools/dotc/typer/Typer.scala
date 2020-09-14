@@ -1253,26 +1253,35 @@ class Typer extends Namer
       if (tree.tpt.isEmpty)
         meth1.tpe.widen match {
           case mt: MethodType =>
-            pt match {
+            val pt1 =
+              if ctx.explicitNulls then
+                pt.stripNull
+              else pt
+            val adaptWithUnsafeNullConver =
+              ctx.explicitNulls && (
+                config.Feature.enabled(nme.unsafeNulls) ||
+                ctx.mode.is(Mode.UnsafeNullConversion))
+            pt1 match {
               case SAMType(sam)
-              if !defn.isFunctionType(pt) && mt <:< sam =>
+              if !defn.isFunctionType(pt1) && mt <:< sam ||
+                adaptWithUnsafeNullConver && mt.isUnsafeConvertable(sam) =>
                 // SAMs of the form C[?] where C is a class cannot be conversion targets.
                 // The resulting class `class $anon extends C[?] {...}` would be illegal,
                 // since type arguments to `C`'s super constructor cannot be constructed.
                 def isWildcardClassSAM =
-                  !pt.classSymbol.is(Trait) && pt.argInfos.exists(_.isInstanceOf[TypeBounds])
+                  !pt1.classSymbol.is(Trait) && pt1.argInfos.exists(_.isInstanceOf[TypeBounds])
                 val targetTpe =
-                  if isFullyDefined(pt, ForceDegree.all) && !isWildcardClassSAM then
-                    pt
-                  else if pt.isRef(defn.PartialFunctionClass) then
+                  if isFullyDefined(pt1, ForceDegree.all) && !isWildcardClassSAM then
+                    pt1
+                  else if pt1.isRef(defn.PartialFunctionClass) then
                     // Replace the underspecified expected type by one based on the closure method type
                     defn.PartialFunctionOf(mt.firstParamTypes.head, mt.resultType)
                   else
-                    report.error(ex"result type of lambda is an underspecified SAM type $pt", tree.srcPos)
-                    pt
-                if (pt.classSymbol.isOneOf(FinalOrSealed)) {
-                  val offendingFlag = pt.classSymbol.flags & FinalOrSealed
-                  report.error(ex"lambda cannot implement $offendingFlag ${pt.classSymbol}", tree.srcPos)
+                    report.error(ex"result type of lambda is an underspecified SAM type $pt1", tree.srcPos)
+                    pt1
+                if (pt1.classSymbol.isOneOf(FinalOrSealed)) {
+                  val offendingFlag = pt1.classSymbol.flags & FinalOrSealed
+                  report.error(ex"lambda cannot implement $offendingFlag ${pt1.classSymbol}", tree.srcPos)
                 }
                 TypeTree(targetTpe)
               case _ =>
