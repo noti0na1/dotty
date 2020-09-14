@@ -114,4 +114,6 @@ object Mode {
   val QuotedPattern: Mode = newMode(25, "QuotedPattern")
 
   val UnsafeNullConversion: Mode = newMode(26, "UnsafeNullConversion")
+
+  val UnsafeNullConversionJava: Mode = newMode(27, "UnsafeNullConversionJava")
 }

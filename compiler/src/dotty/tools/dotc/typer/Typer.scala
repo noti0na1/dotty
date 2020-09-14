@@ -2529,6 +2529,28 @@ class Typer extends Namer
     }
   }
 
+  /** A special typedUnadapted which calls typedUnadapted on the last expression of a block as well */
+  def typedUnadaptedWithBlock(tree: untpd.Tree, pt: Type, locked: TypeVars)(using Context): Tree = {
+    tree match {
+      case block: untpd.Block =>
+        val block1 = desugar.block(block)
+        inContext(ctx.fresh.setNewScope) {
+          val (stats1, exprCtx) = withoutMode(Mode.Pattern) {
+            typedBlockStats(block1.stats)
+          }
+          val expr1 = typedUnadaptedWithBlock(block1.expr, pt.dropIfProto, locked)(using exprCtx)
+          val expr1Tpe = expr1.tpe
+          ensureNoLocalRefs(
+            cpy.Block(block1)(stats1, expr1)
+              .withType(expr1Tpe)
+              .withNotNullInfo(stats1.foldRight(expr1.notNullInfo)(_.notNullInfo.seq(_))),
+            expr1Tpe, localSyms(stats1))
+        }
+      case _ =>
+        typedUnadapted(tree, pt, locked)
+    }
+  }
+
   /** Interpolate and simplify the type of the given tree. */
   protected def simplify(tree: Tree, pt: Type, locked: TypeVars)(using Context): tree.type = {
     if (!tree.denot.isOverloaded &&
@@ -3444,7 +3466,7 @@ class Typer extends Namer
         case closure(Nil, id @ Ident(nme.ANON_FUN), _)
         if defn.isFunctionType(wtp) && !defn.isFunctionType(pt) =>
           val pt1 =
-            if adaptWithUnsafeNullConver then
+            if ctx.explicitNulls then
               pt.stripNull
             else pt
           pt1 match {

@@ -892,9 +892,9 @@ trait Applications extends Compatibility {
             val argsCtx =
               if ctx.explicitNulls && ctx.explicitNullsJavaCompatible then
                 if funRef.symbol.is(JavaDefined) then
-                  ctx.addMode(Mode.UnsafeNullConversion)
+                  ctx.addMode(Mode.UnsafeNullConversionJava)
                 else
-                  ctx.retractMode(Mode.UnsafeNullConversion)
+                  ctx.retractMode(Mode.UnsafeNullConversionJava)
               else ctx
             val app = ApplyTo(tree, fun1, funRef, proto, pt)(using argsCtx)
             convertNewGenericArray(

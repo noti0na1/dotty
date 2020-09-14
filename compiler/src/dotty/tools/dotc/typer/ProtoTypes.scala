@@ -366,15 +366,21 @@ object ProtoTypes {
      */
     def typedArg(arg: untpd.Tree, formal: Type)(using Context): Tree = {
       val wideFormal = formal.widenExpr
+      val javaCallUnsafeNull = ctx.mode.is(Mode.UnsafeNullConversionJava)
       val argCtx =
-        (if wideFormal eq formal then ctx
-        else ctx.withNotNullInfos(ctx.notNullInfos.retractMutables))
-          .retractMode(Mode.UnsafeNullConversion)
+        if wideFormal eq formal then ctx
+        else ctx.withNotNullInfos(ctx.notNullInfos.retractMutables)
+      val adaptCtx = if javaCallUnsafeNull then ctx.addMode(Mode.UnsafeNullConversion) else ctx
       val locked = ctx.typerState.ownedVars
-      val targ =  cacheTypedArg(arg,
+      val targ = if javaCallUnsafeNull then
+        cacheTypedArg(arg,
+          typer.typedUnadaptedWithBlock(_, wideFormal, locked)(using argCtx.retractMode(Mode.UnsafeNullConversionJava)),
+          force = true)
+      else
+        cacheTypedArg(arg,
           typer.typedUnadapted(_, wideFormal, locked)(using argCtx),
           force = true)
-      typer.adapt(targ, wideFormal, locked)
+      typer.adapt(targ, wideFormal, locked)(using adaptCtx)
     }
 
     /** The type of the argument `arg`, or `NoType` if `arg` has not been typed before
