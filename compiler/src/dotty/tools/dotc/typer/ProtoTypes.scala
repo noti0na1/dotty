@@ -361,7 +361,7 @@ object ProtoTypes {
     /** Type single argument and remember the unadapted result in `myTypedArg`.
      *  used to avoid repeated typings of trees when backtracking.
      */
-    def typedArg(arg: untpd.Tree, formal: Type)(using Context): Tree = {
+     def typedArg(arg: untpd.Tree, formal: Type)(using Context): Tree = {
       val wideFormal = formal.widenExpr
       val argCtx =
         if wideFormal eq formal then ctx
