@@ -274,6 +274,41 @@ User can import `scala.language.unsafeNulls` to create such scope, or use `-lang
 
 The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected (for example, some code relies on the fact of `Null <:< AnyRef`). To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
 
+```scala
+def f(x: String): String = ???
+
+import scala.language.unsafeNulls
+
+val s: String | Null = ???
+val a: String = s // unsafely convert String | Null to String
+
+val b1 = s.trim() // call .trim() on String | Null unsafely
+val b2 = b1.length()
+
+f(s).trim() // pass String | Null as an argument of type String unsafely
+
+val c: String = null // Null to String
+
+val d1: Array[String] = ???
+val d2: Array[String | Null] = d1 // unsafely convert Array[String] to Array[String | Null]
+val d3: Array[String] = Array(null) // unsafe
+```
+
+Without the `unsafeNulls`, all these unsafe operations will not be compiled.
+
+`unsafeNulls` also works for extension methods and implicit search.
+
+```scala
+import scala.language.unsafeNulls
+
+val x = "hello, world!".split(" ").map(_.length)
+
+given Conversion[String, Array[String]] = _ => ???
+
+val y: String | Null = ???
+val z: Array[String | Null] = y
+```
+
 ## Flow Typing
 
 We added a simple form of flow-sensitive type inference. The idea is that if `p` is a
