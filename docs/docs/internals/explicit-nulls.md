@@ -10,12 +10,11 @@ with union types: e.g. `val x: String|Null = null`.
 The implementation of the feature in dotty can be conceptually divided in several parts:
   1. changes to the type hierarchy so that `Null` is only a subtype of `Any`
   2. a "translation layer" for Java interop that exposes the nullability in Java APIs
-  3. a "magic" `UncheckedNull` type (an alias for `Null`) that is recognized by the compiler and
-     allows unsound member selections (trading soundness for usability)
+  3. a `unsafeNulls` language feature which enables implicit unsafe conversion between `T` and `T | Null`
 
-## Feature Flag
+## Explicit-Nulls Flag
 
-Explicit nulls are disabled by default. They can be enabled via `-Yexplicit-nulls` defined in
+The explicit-nulls flag is currently disabled by default. It can be enabled via `-Yexplicit-nulls` defined in
 `ScalaSettings.scala`. All of the explicit-nulls-related changes should be gated behind the flag.
 
 ## Type Hierarchy
@@ -26,14 +25,33 @@ We change the type hierarchy so that `Null` is only a subtype of `Any` by:
   - changing the parent of `Null` in `Definitions` to point to `Any` and not `AnyRef`
   - changing `isBottomType` and `isBottomClass` in `Definitions`
 
+## Working with Nullable Unions
+
+There are some utility functions for nullable types in `NullOpsDecorator.scala` . They are extension methods for `Type`; hence we can use them in this way: `tp.f(...)`.
+
+- `stripNull` syntactically strips all `Null` types in the union:
+  e.g. `String|Null => String`.
+- `stripAllNullS` collapses all `Null` unions within this type, and not just the outermost
+  ones (as `stripNull` does).
+- `isNullableUnion` determines whether `this` is a nullable union.
+- `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.
+- `isUnsafeConvertable` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
+
+Within `Types.scala`, we also defined an extractor `OrNull` to extract the non-nullable part of a nullable unions .
+
+```scala
+(tp: Type) match {
+  case OrNull(tp1) => // if tp is a nullable union: tp1 | Null
+  case _ => // otherwise
+}
+```
+
 ## Java Interop
 
 The problem we're trying to solve here is: if we see a Java method `String foo(String)`,
 what should that method look like to Scala?
-  - since we should be able to pass `null` into Java methods, the argument type should be `String|UncheckedNull`
-  - since Java methods might return `null`, the return type should be `String|UncheckedNull`
-
-`UncheckedNull` here is a type alias for `Null` with "magic" properties (see below).
+  - since we should be able to pass `null` into Java methods, the argument type should be `String | Null`
+  - since Java methods might return `null`, the return type should be `String | Null`
 
 At a high-level:
   - we track the loading of Java fields and methods as they're loaded by the compiler
@@ -49,51 +67,43 @@ produces what the type of the symbol should be in the explicit nulls world.
 
 1. If the symbol is a Enum value definition or a `TYPE_` field, we don't nullify the type
 2. If it is `toString()` method or the constructor, or it has a `@NotNull` annotation,
-  we nullify the type, without a `UncheckedNull` at the outmost level.
+  we nullify the type, without a `Null` at the outmost level.
 3. Otherwise, we nullify the type in regular way.
+
+The `@NotNull` annotations are defined in `Definitions.scala`.
 
 See `JavaNullMap` in `JavaNullInterop.scala` for more details about how we nullify different types.
 
-## UncheckedNull
+## Relaxed Overriding Check
 
-`UncheckedNull` is just an alias for `Null`, but with magic power. `UncheckedNull`'s magic (anti-)power is that
-it's unsound.
+If the explicit nulls flag is enabled, the overriding check between Scala classes and Java classes is relaxed.
 
-```scala
-val s: String|UncheckedNull = "hello"
-s.length // allowed, but might throw NPE
-```
+The `matches` function in `Types.scala` is used to select condidated for overriding check.
 
-`UncheckedNull` is defined as `UncheckedNullAlias` in `Definitions.scala`.
-The logic to allow member selections is defined in `findMember` in `Types.scala`:
-  - if we're finding a member in a type union
-  - and the union contains `UncheckedNull` on the r.h.s. after normalization (see below)
-  - then we can continue with `findMember` on the l.h.s of the union (as opposed to failing)
+The `compatibleTypes` in `RefCheck.scala` determines whether the overriding types are compatible.
 
-## Working with Nullable Unions
+## Unsafe Nulls
 
-Within `Types.scala`, we defined some extractors to work with nullable unions:
-`OrNull` and `OrUncheckedNull`.
+The `unsafeNulls` language feature is currently disabled by default. It can be enabled by importing `scala.language.unsafeNulls` or using `-language:unsafeNulls`. The feature object is defined in `library/src/scalaShadowing/language.scala`. We can use `config.Feature.enabled(nme.unsafeNulls)` to check if this feature is enabled.
 
-```scala
-(tp: Type) match {
-  case OrNull(tp1) => // if tp is a nullable union: tp1 | Null
-  case _ => // otherwise
-}
-```
+The unsafe nulls conversion could happen if:
+1. the explicit nulls flag is enabled, and
+2. `unsafeNulls` language feature is enabled, or `UnsafeNullConversion` mode is in the context.
 
-This extractor will call utility methods in `NullOpsDecorator.scala`. All of these
-are methods of the `Type` class, so call them with `this` as a receiver:
+The reason to use the `UnsafeNullConversion` mode is because the current context may not see the language feature. For example, implicit search could run in some different contexts.
 
-- `stripNull` syntactically strips all `Null` types in the union:
-  e.g. `String|Null => String`.
-- `stripUncheckedNull` is like `stripNull` but only removes `UncheckedNull` from the union.
-  This is needed when we want to "revert" the Java nullification function.
-- `stripAllUncheckedNull` collapses all `UncheckedNull` unions within this type, and not just the outermost
-  ones (as `stripUncheckedNull` does).
-- `isNullableUnion` determines whether `this` is a nullable union.
-- `isUncheckedNullableUnion` determines whether `this` is syntactically a union of the form
-  `T|UncheckedNull`.
+Since we want to allow selecting member on nullable values, when searching a member of a type, the `| Null` part should be ignored. See `goOr` in `Types.scala`.
+
+During adapting, if the type of the tree is not a subtype of the expected type, the `adaptToSubType` in `Typer.scala` will run. The implicit search is invoked to find conversions for the tree. If `unsafeNulls` is enabled, we use the new search scheme:
+1. If the `tree.tpe` is nullable, we strip `Null` from the tree then search.
+2. If the `tree.tpe` is not nullable or the last step fails, we search on the tree directly.
+3. If the last step fails, we try to cast tree to `pt` if the two types `isUnsafeConvertable`.
+
+Since implicit search (find candidates and try to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
+
+The SAM type conversion also happens in `adaptToSubType`. We need to strip `Null` from `pt` in order to get class information.
+
+We need to modify the overloading resolution as well. The `isCompatible` and `necessarilyCompatible` functions in `ProtoTypes.scala` are used to compare types for overloading resolution. When `unsafeNulls` is enabled, we need to strip all nulls from the type before comparison.
 
 ## Flow Typing
 
