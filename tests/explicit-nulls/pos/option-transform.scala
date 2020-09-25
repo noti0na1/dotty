@@ -4,7 +4,7 @@ class OptionTransform {
    *
    *  @return   Some(value) if value != null, None if value == null
    */
-  def[T <: AnyRef] (x: T | Null) toOption: Option[T] =
+  extension[T <: AnyRef](x: T | Null) def toOption: Option[T] =
     if x == null then None else Some(x)
 
   def test = {
