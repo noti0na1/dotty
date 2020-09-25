@@ -1,5 +1,5 @@
 class Extensions {
-  def (s: String).ext(ss: String): String = s + ss
+  extension(s: String) def ext(ss: String): String = s + ss
 
   def f = {
     val x: String | Null = ???
