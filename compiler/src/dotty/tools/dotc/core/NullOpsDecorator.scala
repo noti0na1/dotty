@@ -64,7 +64,7 @@ object NullOpsDecorator {
       stripped ne self
     }
 
-    /** Can the type have null value after erasure?
+    /** Can the type has null value after erasure?
      */
     def isNullableAfterErasure(using Context): Boolean =  self match {
       case tp: ClassInfo => tp.cls.isNullableClassAfterErasure
