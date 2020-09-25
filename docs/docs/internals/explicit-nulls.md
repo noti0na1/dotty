@@ -99,7 +99,7 @@ During adapting, if the type of the tree is not a subtype of the expected type, 
 2. If the `tree.tpe` is not nullable or the last step fails, we search on the tree directly.
 3. If the last step fails, we try to cast tree to `pt` if the two types `isUnsafeConvertable`.
 
-Since implicit search (find candidates and try to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
+Since implicit search (finding candidates and trying to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
 
 The SAM type conversion also happens in `adaptToSubType`. We need to strip `Null` from `pt` in order to get class information.
 
