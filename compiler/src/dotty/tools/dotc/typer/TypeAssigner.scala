@@ -163,7 +163,12 @@ trait TypeAssigner {
       errorType(ex"$qualType does not have a constructor", tree.srcPos)
     else {
       val kind = if (name.isTypeName) "type" else "value"
-      def addendum = err.selectErrorAddendum(tree, qual1, qualType, importSuggestionAddendum)
+      val foundWithoutNull = qualType match {
+        case OrNull(qualType1) =>
+          reallyExists(qualType1.findMember(name, pre))
+        case _ => false
+      }
+      def addendum = err.selectErrorAddendum(tree, qual1, qualType, importSuggestionAddendum, foundWithoutNull)
       errorType(NotAMember(qualType, name, kind, addendum), tree.srcPos)
     }
   }

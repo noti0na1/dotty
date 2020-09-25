@@ -7,14 +7,19 @@ Explicit nulls is an opt-in feature that modifies the Scala type system, which m
 (anything that extends `AnyRef`) _non-nullable_.
 
 This means the following code will no longer typecheck:
-```
-val x: String = null // error: found `Null`,  but required `String`
+```scala
+val x: String = null // error: found `Null`, but required `String`
 ```
 
 Instead, to mark a type as nullable we use a [union type](https://dotty.epfl.ch/docs/reference/new-types/union-types.html)
 
+```scala
+val x: String | Null = null // ok
 ```
-val x: String|Null = null // ok
+
+A nullable type could have null value during runtime; hence, it is not safe to select a member without checking its nullity.
+```scala
+x.trim // error: trim is not member of String | Null
 ```
 
 Explicit nulls are enabled via a `-Yexplicit-nulls` flag.
@@ -24,12 +29,29 @@ Read on for details.
 ## New Type Hierarchy
 
 When explicit nulls are enabled, the type hierarchy changes so that `Null` is only a subtype of
-`Any`, as opposed to every reference type.
+`Any`, as opposed to every reference type, which means `null` is no longer a value of `AnyRef` and its subtypes.
 
 This is the new type hierarchy:
 ![](../../../images/explicit-nulls/explicit-nulls-type-hierarchy.png "Type Hierarchy for Explicit Nulls")
 
 After erasure, `Null` remains a subtype of all reference types (as forced by the JVM).
+
+## Working with Null
+
+To make working with nullable values easier, we propose a utility function to the standard library:
+An extension method `.nn` to "cast away" nullability.
+
+```scala
+extension [T](x: T | Null) def nn: x.type & T =
+  if x == null then
+    throw new NullPointerException("tried to cast away nullability, but value is null")
+  else x.asInstanceOf[x.type & T]
+```
+
+This means that given `x: String|Null`, `x.nn` has type `String`, so we can call all the
+usual methods on it. Of course, `x.nn` will throw a NPE if `x` is `null`.
+
+Don't use `.nn` on mutable variables directly, because it may introduce an unknown type into the type of the variable.
 
 ## Unsoundness
 
@@ -70,24 +92,6 @@ y == x          // ok
 (x: String | Null) == null  // ok
 (x: Any) == null            // ok
 ```
-
-## Working with Null
-
-To make working with nullable values easier, we propose adding a few utilities to the standard library.
-So far, we have found the following useful:
-
-  - An extension method `.nn` to "cast away" nullability
-
-    ```scala
-    def[T] (x: T|Null) nn: x.type & T =
-      if (x == null) throw new NullPointerException("tried to cast away nullability, but value is null")
-      else x.asInstanceOf[x.type & T]
-    ```
-
-    This means that given `x: String|Null`, `x.nn` has type `String`, so we can call all the
-    usual methods on it. Of course, `x.nn` will throw a NPE if `x` is `null`.
-
-    Don't use `.nn` on mutable variables directly, because it may introduce an unknown type into the type of the variable.
 
 ## Java Interop
 
@@ -249,7 +253,7 @@ We illustrate the rules with following examples:
 
 ### Override check
 
-When we check overriding between Scala classes and Java classes, the rules are relaxed for `Null` type with this feature.
+When we check overriding between Scala classes and Java classes, the rules are relaxed for `Null` type with this feature, in order to help users to working with Java libraries.
 
 Suppose we have Java method `String f(String x)`, we can override this method in Scala in any of the following forms:
 
@@ -263,51 +267,7 @@ def f(x: String | Null): String
 def f(x: String): String
 ```
 
-### UnsafeNulls
-
-It is difficult to work with nullable values, we introduce a language feature `unsafeNulls`. Inside this "unsafe" scope, all `T | Null` values can be used as `T`, and `Null` type keeps being a subtype of `Any`.
-
-User can import `scala.language.unsafeNulls` to create such scope, or use `-language:unsafeNulls` to enable this feature globally. The following unsafe null operations will apply to all nullable types:
-1. select member of `T` on `T | Null` object
-2. call extension methods of `T` on `T | Null`
-3. convert `T1` to `T2` if `T1.stripAllNulls <:< T2.stripAllNulls` or `T1` is `Null` and `T2` has null value after erasure
-
-The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected (for example, some code relies on the fact of `Null <:< AnyRef`). To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
-
-```scala
-def f(x: String): String = ???
-
-import scala.language.unsafeNulls
-
-val s: String | Null = ???
-val a: String = s // unsafely convert String | Null to String
-
-val b1 = s.trim() // call .trim() on String | Null unsafely
-val b2 = b1.length()
-
-f(s).trim() // pass String | Null as an argument of type String unsafely
-
-val c: String = null // Null to String
-
-val d1: Array[String] = ???
-val d2: Array[String | Null] = d1 // unsafely convert Array[String] to Array[String | Null]
-val d3: Array[String] = Array(null) // unsafe
-```
-
-Without the `unsafeNulls`, all these unsafe operations will not be compiled.
-
-`unsafeNulls` also works for extension methods and implicit search.
-
-```scala
-import scala.language.unsafeNulls
-
-val x = "hello, world!".split(" ").map(_.length)
-
-given Conversion[String, Array[String]] = _ => ???
-
-val y: String | Null = ???
-val z: Array[String | Null] = y
-```
+Note that some of the definitions could cause unsoundness. For example, the return type is not nullable, but a `null` value is actually returned.
 
 ## Flow Typing
 
@@ -472,6 +432,53 @@ We don't support:
     // s2: String not inferred
   }
   ```
+
+### UnsafeNulls
+
+It is difficult to work with nullable values, we introduce a language feature `unsafeNulls`. Inside this "unsafe" scope, all `T | Null` values can be used as `T`, and `Null` type keeps being a subtype of `Any`.
+
+Users can import `scala.language.unsafeNulls` to create such scopes, or use `-language:unsafeNulls` to enable this feature globally. The following unsafe null operations will apply to all nullable types:
+1. select member of `T` on `T | Null` object
+2. call extension methods of `T` on `T | Null`
+3. convert `T1` to `T2` if `T1.stripAllNulls <:< T2.stripAllNulls` or `T1` is `Null` and `T2` has null value after erasure
+4. allow equality check between `T` and `T | Null`
+
+The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected (for example, some code relies on the fact of `Null <:< AnyRef`). To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
+
+```scala
+def f(x: String): String = ???
+
+import scala.language.unsafeNulls
+
+val s: String | Null = ???
+val a: String = s // unsafely convert String | Null to String
+
+val b1 = s.trim() // call .trim() on String | Null unsafely
+val b2 = b1.length()
+
+f(s).trim() // pass String | Null as an argument of type String unsafely
+
+val c: String = null // Null to String
+
+val d1: Array[String] = ???
+val d2: Array[String | Null] = d1 // unsafely convert Array[String] to Array[String | Null]
+val d3: Array[String] = Array(null) // unsafe
+```
+
+Without the `unsafeNulls`, all these unsafe operations will not be typechecked.
+
+`unsafeNulls` also works for extension methods and implicit search.
+
+```scala
+import scala.language.unsafeNulls
+
+val x = "hello, world!".split(" ").map(_.length)
+
+given Conversion[String, Array[String]] = _ => ???
+
+val y: String | Null = ???
+val z: Array[String | Null] = y
+```
 
 ## Binary Compatibility
 
