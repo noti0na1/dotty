@@ -1604,7 +1604,8 @@ class Typer extends Namer
   }
 
   def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(using Context): SeqLiteral = {
-    val elemProto = pt.elemType match {
+    val pt1 = if ctx.explicitNulls then pt.stripNull else pt
+    val elemProto = pt1.elemType match {
       case NoType => WildcardType
       case bounds: TypeBounds => WildcardType(bounds)
       case elemtp => elemtp
