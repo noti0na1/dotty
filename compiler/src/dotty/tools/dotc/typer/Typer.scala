@@ -550,7 +550,14 @@ class Typer extends Namer
       val qual1 = qual.tpe match {
         case OrNull(tpe1) if config.Feature.enabled(nme.unsafeNulls) =>
           qual.cast(AndType(qual.tpe, tpe1))
-        case _ => qual
+        case tp =>
+          if ctx.explicitNulls &&
+            tp.isNullType &&
+            config.Feature.enabled(nme.unsafeNulls) &&
+            (tree.name == nme.eq || tree.name == nme.ne) then
+            // Allow selecting `eq` and `ne` on `Null` specially
+            qual.cast(defn.ObjectType)
+          else qual
       }
       typedSelect(tree, pt, qual1).withSpan(tree.span).computeNullable()
 
@@ -1257,8 +1264,9 @@ class Typer extends Namer
             val pt1 = if ctx.explicitNulls then pt.stripNull else pt
             pt1 match {
               case SAMType(sam)
-              if !defn.isFunctionType(pt1) && mt <:< sam ||
-                JavaNullInterop.convertUnsafeNulls && mt.isUnsafeConvertable(sam) =>
+              if !defn.isFunctionType(pt1) && (
+                mt <:< sam ||
+                JavaNullInterop.convertUnsafeNulls && mt.stripAllNulls <:< sam.stripAllNulls) =>
                 // SAMs of the form C[?] where C is a class cannot be conversion targets.
                 // The resulting class `class $anon extends C[?] {...}` would be illegal,
                 // since type arguments to `C`'s super constructor cannot be constructed.
@@ -3468,7 +3476,7 @@ class Typer extends Namer
             case SAMType(sam)
             if wtp <:< sam.toFunctionType() ||
               (JavaNullInterop.convertUnsafeNulls &&
-                wtp.isUnsafeConvertable(sam.toFunctionType())) =>
+                wtp.stripAllNulls <:< sam.toFunctionType().stripAllNulls) =>
               // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
               // but this prevents case blocks from implementing polymorphic partial functions,
               // since we do not know the result parameter a priori. Have to wait until the
@@ -3537,10 +3545,12 @@ class Typer extends Namer
         }
       }
 
+      val treeTpe = tree.tpe
+
       def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
         // If explicitNulls and unsafeNulls are enabled, and
         if ctx.mode.is(Mode.UnsafeNullConversion) && pt.isValueType &&
-          tree.tpe.isUnsafeConvertable(pt)
+          treeTpe.isUnsafeConvertable(pt)
         then tree.cast(pt)
         else fail
 
@@ -3562,17 +3572,23 @@ class Typer extends Namer
       inContext(searchCtx) {
         if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
           if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
-            report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
-          def normalSearch =
-            searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
-          tree.tpe match {
-            case OrNull(tpe1) if ctx.mode.is(Mode.UnsafeNullConversion) =>
-              // If the type of the tree is nullable, and unsafeNullConversion is enabled,
-              // then we search the tree without the `Null` type first.
-              // If this fails, we search the original tree.
-              searchTree(tree.cast(tpe1)) { _ => normalSearch }
-            case _ =>
-              normalSearch
+            // We want to allow `null` to `AnyRef` if UnsafeNullConversion is enabled
+            if !(ctx.explicitNulls &&
+              treeTpe.isUnsafeConvertable(pt) &&
+              ctx.mode.is(Mode.UnsafeNullConversion)) then
+              report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
+            tree.cast(pt)
+          else
+            def normalSearch =
+              searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
+            treeTpe match {
+              case OrNull(tpe1) if ctx.mode.is(Mode.UnsafeNullConversion) =>
+                // If the type of the tree is nullable, and unsafeNullConversion is enabled,
+                // then we search the tree without the `Null` type first.
+                // If this fails, we search the original tree.
+                searchTree(tree.cast(tpe1)) { _ => normalSearch }
+              case _ =>
+                normalSearch
           }
         else tryUnsafeNullConver(recover(NoMatchingImplicits))
       }
