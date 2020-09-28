@@ -432,6 +432,8 @@ Users can import `scala.language.unsafeNulls` to create such scopes, or use `-la
 3. convert `T1` to `T2` if `T1.stripAllNulls <:< T2.stripAllNulls` or `T1` is `Null` and `T2` has null value after erasure
 4. allow equality check between `T` and `T | Null`
 
+Addtionally, `null` can be used as `AnyRef` (`Object`), which means you can select `.eq` or `.toString` on it.
+
 The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected (for example, some code relies on the fact of `Null <:< AnyRef`). To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
 
 ```scala
