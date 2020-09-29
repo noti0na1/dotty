@@ -3598,6 +3598,7 @@ class Typer extends Namer
               report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
             tree.cast(pt)
           else
+            // TODO: we don't need to second time search, need to modify Implicits more
             def normalSearch =
               searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
             treeTpe match {
@@ -3608,7 +3609,7 @@ class Typer extends Namer
                 searchTree(tree.cast(tpe1)) { _ => normalSearch }
               case _ =>
                 normalSearch
-          }
+            }
         else tryUnsafeNullConver(recover(NoMatchingImplicits))
       }
     }

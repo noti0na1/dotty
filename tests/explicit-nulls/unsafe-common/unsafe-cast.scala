@@ -57,7 +57,7 @@ class S {
     n1(Array("a", "b"))
     n2(Array("a", "b"))
 
-    n0(Array(null)) // error
+    n0(Array[String](null)) // error
     n1(Array(null))
     n2(Array(null))
 
