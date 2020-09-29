@@ -32,7 +32,7 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
           case defn.ArrayOf(elemTp) =>
             val etag = typer.inferImplicitArg(defn.ClassTagClass.typeRef.appliedTo(elemTp), span)
             if etag.tpe.isError then EmptyTree else etag.select(nme.wrap)
-          case tp if hasStableErasure(tp) && !defn.isBottomClass(tp.typeSymbol) =>
+          case tp if hasStableErasure(tp) && !defn.isBottomClassAfterErasure(tp.typeSymbol) =>
             val sym = tp.typeSymbol
             val classTag = ref(defn.ClassTagModule)
             val tag =

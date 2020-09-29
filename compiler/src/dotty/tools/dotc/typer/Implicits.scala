@@ -35,6 +35,7 @@ import config.Printers.{implicits, implicitsDetailed}
 import collection.mutable
 import reporting._
 import annotation.tailrec
+import NullOpsDecorator._
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
@@ -132,7 +133,9 @@ object Implicits:
             else if (mt.paramInfos.lengthCompare(1) == 0 && {
                   var formal = widenSingleton(mt.paramInfos.head)
                   if (approx) formal = wildApprox(formal)
-                  explore(argType relaxed_<:< formal.widenExpr)
+                  explore((argType relaxed_<:< formal.widenExpr) ||
+                    Nullables.convertUnsafeNulls &&
+                      argType.isUnsafelyConvertable(formal.widenExpr))
                 })
               Candidate.Conversion
             else
