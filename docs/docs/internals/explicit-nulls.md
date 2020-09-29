@@ -93,12 +93,7 @@ The reason to use the `UnsafeNullConversion` mode is because the current context
 
 Since we want to allow selecting member on nullable values, when searching a member of a type, the `| Null` part should be ignored. See `goOr` in `Types.scala`.
 
-During adapting, if the type of the tree is not a subtype of the expected type, the `adaptToSubType` in `Typer.scala` will run. The implicit search is invoked to find conversions for the tree. If `unsafeNulls` is enabled, we use the new search scheme:
-1. If the `tree.tpe` is nullable, we strip `Null` from the tree then search.
-2. If the `tree.tpe` is not nullable or the last step fails, we search on the tree directly.
-3. If the last step fails, we try to cast tree to `pt` if the two types `isUnsafelyConvertable`.
-
-Since implicit search (finding candidates and trying to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
+During adapting, if the type of the tree is not a subtype of the expected type, the `adaptToSubType` in `Typer.scala` will run. The implicit search is invoked to find conversions for the tree. Since implicit search (finding candidates and trying to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
 
 The SAM type conversion also happens in `adaptToSubType`. We need to strip `Null` from `pt` in order to get class information.
 

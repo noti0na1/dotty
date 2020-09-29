@@ -3598,18 +3598,7 @@ class Typer extends Namer
               report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
             tree.cast(pt)
           else
-            // TODO: we don't need to second time search, need to modify Implicits more
-            def normalSearch =
-              searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
-            treeTpe match {
-              case OrNull(tpe1) if ctx.mode.is(Mode.UnsafeNullConversion) =>
-                // If the type of the tree is nullable, and unsafeNullConversion is enabled,
-                // then we search the tree without the `Null` type first.
-                // If this fails, we search the original tree.
-                searchTree(tree.cast(tpe1)) { _ => normalSearch }
-              case _ =>
-                normalSearch
-            }
+            searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
         else tryUnsafeNullConver(recover(NoMatchingImplicits))
       }
     }
