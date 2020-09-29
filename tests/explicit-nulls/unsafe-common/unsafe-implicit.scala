@@ -53,6 +53,41 @@ class S {
   }
 
   locally {
+    implicit def g(x: Array[String]): String = ???
+
+    val y1: Array[String] = ???
+    val y2: Array[String] | Null = ???
+    val y3: Array[String | Null] | Null = ???
+
+    y1: String
+    y2: String // error
+    y3: String // error
+
+    y1: String | Null
+    y2: String | Null // error
+    y3: String | Null // error
+  }
+
+  locally {
+    implicit def g(x: Array[String | Null]): String | Null = ???
+
+    val y1: Array[String] = ???
+    val y2: Array[String] | Null = ???
+    val y3: Array[String | Null] = ???
+    val y4: Array[String | Null] | Null = ???
+
+    y1: String // error
+    y2: String // error
+    y3: String // error
+    y4: String // error
+
+    y1: String | Null // error
+    y2: String | Null // error
+    y3: String | Null
+    y4: String | Null // error
+  }
+
+  locally {
     given Conversion[String, Array[String]] = _ => ???
 
     val y1: String = ???
@@ -67,6 +102,22 @@ class S {
     val z6: Array[String | Null] = y2 // error
     val z7: Array[String] | Null = y2 // error
     val z8: Array[String | Null] | Null = y2 // error
+  }
+
+  locally {
+    given Conversion[Array[String], String] = _ => ???
+
+    val y1: Array[String] = ???
+    val y2: Array[String] | Null = ???
+    val y3: Array[String | Null] | Null = ???
+
+    y1: String
+    y2: String // error
+    y3: String // error
+
+    y1: String | Null
+    y2: String | Null // error
+    y3: String | Null // error
   }
 
   abstract class MyConversion[T] extends Conversion[T, Array[T]]
