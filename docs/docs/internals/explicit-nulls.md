@@ -35,7 +35,7 @@ There are some utility functions for nullable types in `NullOpsDecorator.scala` 
   ones (as `stripNull` does).
 - `isNullableUnion` determines whether `this` is a nullable union.
 - `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.
-- `isUnsafeConvertable` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
+- `isUnsafelyConvertable` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
 
 Within `Types.scala`, we also defined an extractor `OrNull` to extract the non-nullable part of a nullable unions .
 
@@ -97,7 +97,7 @@ Since we want to allow selecting member on nullable values, when searching a mem
 During adapting, if the type of the tree is not a subtype of the expected type, the `adaptToSubType` in `Typer.scala` will run. The implicit search is invoked to find conversions for the tree. If `unsafeNulls` is enabled, we use the new search scheme:
 1. If the `tree.tpe` is nullable, we strip `Null` from the tree then search.
 2. If the `tree.tpe` is not nullable or the last step fails, we search on the tree directly.
-3. If the last step fails, we try to cast tree to `pt` if the two types `isUnsafeConvertable`.
+3. If the last step fails, we try to cast tree to `pt` if the two types `isUnsafelyConvertable`.
 
 Since implicit search (finding candidates and trying to type the new tree) could run in some different contexts, we have to pass the `UnsafeNullConversion` mode to the search context.
 
