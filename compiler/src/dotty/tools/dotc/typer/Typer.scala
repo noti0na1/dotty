@@ -1266,7 +1266,7 @@ class Typer extends Namer
               case SAMType(sam)
               if !defn.isFunctionType(pt1) && (
                 mt <:< sam ||
-                JavaNullInterop.convertUnsafeNulls && mt.stripAllNulls <:< sam.stripAllNulls) =>
+                Nullables.convertUnsafeNulls && mt.stripAllNulls <:< sam.stripAllNulls) =>
                 // SAMs of the form C[?] where C is a class cannot be conversion targets.
                 // The resulting class `class $anon extends C[?] {...}` would be illegal,
                 // since type arguments to `C`'s super constructor cannot be constructed.
@@ -3475,7 +3475,7 @@ class Typer extends Namer
           pt1 match {
             case SAMType(sam)
             if wtp <:< sam.toFunctionType() ||
-              (JavaNullInterop.convertUnsafeNulls &&
+              (Nullables.convertUnsafeNulls &&
                 wtp.stripAllNulls <:< sam.toFunctionType().stripAllNulls) =>
               // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
               // but this prevents case blocks from implementing polymorphic partial functions,
@@ -3550,7 +3550,7 @@ class Typer extends Namer
       def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
         // If explicitNulls and unsafeNulls are enabled, and
         if ctx.mode.is(Mode.UnsafeNullConversion) && pt.isValueType &&
-          treeTpe.isUnsafeConvertable(pt)
+          treeTpe.isUnsafelyConvertable(pt)
         then tree.cast(pt)
         else fail
 
@@ -3573,9 +3573,8 @@ class Typer extends Namer
         if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
           if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
             // We want to allow `null` to `AnyRef` if UnsafeNullConversion is enabled
-            if !(ctx.explicitNulls &&
-              treeTpe.isUnsafeConvertable(pt) &&
-              ctx.mode.is(Mode.UnsafeNullConversion)) then
+            if !(ctx.mode.is(Mode.UnsafeNullConversion) &&
+              treeTpe.isUnsafelyConvertable(pt)) then
               report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
             tree.cast(pt)
           else
