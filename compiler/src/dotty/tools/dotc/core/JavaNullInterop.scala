@@ -37,12 +37,6 @@ import Types._
  */
 object JavaNullInterop {
 
-  /** Should we try to convert values ignoring Null type at this moment? */
-  def convertUnsafeNulls(using Context): Boolean =
-    ctx.explicitNulls && (
-      config.Feature.enabled(nme.unsafeNulls) ||
-      ctx.mode.is(Mode.UnsafeNullConversion))
-
   /** Transforms the type `tp` of Java member `sym` to be explicitly nullable.
    *  `tp` is needed because the type inside `sym` might not be set when this method is called.
    *
