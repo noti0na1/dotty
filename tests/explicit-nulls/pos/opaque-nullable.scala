@@ -10,11 +10,14 @@ object Nullable {
   def some[A <: AnyRef](x: A): Nullable[A] = x
   def none: Nullable[Nothing] = null
 
-  implicit class NullableOps[A <: AnyRef](x: Nullable[A]) {
-    def isEmpty: Boolean = x == null
-    def flatMap[B <: AnyRef](f: A => Nullable[B]): Nullable[B] =
-      if (x == null) null
-      else f(x)
+  given nullableOps as AnyRef {
+    extension [A <: AnyRef](x: Nullable[A])
+      def isEmpty: Boolean = x == null
+
+    extension [A <: AnyRef, B <: AnyRef](x: Nullable[A])
+      def flatMap(f: A => Nullable[B]): Nullable[B] =
+        if (x == null) null
+        else f(x)
   }
 
   val s1: Nullable[String] = "hello"
