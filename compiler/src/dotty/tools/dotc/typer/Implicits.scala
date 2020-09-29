@@ -307,6 +307,7 @@ object Implicits:
       val outerImplicits: ContextualImplicits,
       isImport: Boolean)(initctx: Context) extends ImplicitRefs(initctx) {
     private val eligibleCache = EqHashMap[Type, List[Candidate]]()
+    private val eligibleCacheUnsafeNulls = EqHashMap[Type, List[Candidate]]()
 
     /** The level increases if current context has a different owner or scope than
      *  the context of the next-outer ImplicitRefs. This is however disabled under
@@ -334,24 +335,26 @@ object Implicits:
 
     /** The implicit references that are eligible for type `tp`. */
     def eligible(tp: Type, enableUnsafeNulls: Boolean = false): List[Candidate] =
-      if (tp.hash == NotCached)
+      def searchWithCache(cache: EqHashMap[Type, List[Candidate]]) = {
+        val eligibles = cache.lookup(tp)
+        if eligibles != null then
+          Stats.record("cached eligible")
+          eligibles
+        else if irefCtx eq NoContext then Nil
+        else
+          Stats.record(i"compute eligible cached")
+          val result = computeEligible(tp, enableUnsafeNulls)
+          cache(tp) = result
+          result
+      }
+      if tp.hash == NotCached then
         Stats.record(i"compute eligible not cached ${tp.getClass}")
         Stats.record(i"compute eligible not cached")
         computeEligible(tp, enableUnsafeNulls)
-      else {
-        val eligibles = eligibleCache.lookup(tp)
-        if (eligibles != null) {
-          Stats.record("cached eligible")
-          eligibles
-        }
-        else if (irefCtx eq NoContext) Nil
-        else {
-          Stats.record(i"compute eligible cached")
-          val result = computeEligible(tp, enableUnsafeNulls)
-          eligibleCache(tp) = result
-          result
-        }
-      }
+      else if enableUnsafeNulls then
+        searchWithCache(eligibleCacheUnsafeNulls)
+      else
+        searchWithCache(eligibleCache)
 
     private def computeEligible(tp: Type, enableUnsafeNulls: Boolean): List[Candidate] = /*>|>*/ trace(i"computeEligible $tp in $refs%, %", implicitsDetailed) /*<|<*/ {
       if (monitored) record(s"check eligible refs in irefCtx", refs.length)
