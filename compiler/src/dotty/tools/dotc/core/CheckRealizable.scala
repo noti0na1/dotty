@@ -116,6 +116,15 @@ class CheckRealizable(using Context) {
     case _: SingletonType | NoPrefix =>
       Realizable
     case tp =>
+      def checkAndType(x: TermRef, y: Type) =
+        (realizability(x) eq Realizable) && (y <:< x.widen)
+      val isStableAndType = tp match {
+        case AndType(tr: TermRef, tp1) =>
+          checkAndType(tr, tp1)
+        case AndType(tp1, tr: TermRef) =>
+          checkAndType(tr, tp1)
+        case _ => false
+      }
       def isConcrete(tp: Type): Boolean = tp.dealias match {
         case tp: TypeRef => tp.symbol.isClass
         case tp: TypeProxy => isConcrete(tp.underlying)
@@ -123,7 +132,8 @@ class CheckRealizable(using Context) {
         case tp: OrType  => isConcrete(tp.tp1) && isConcrete(tp.tp2)
         case _ => false
       }
-      if (!isConcrete(tp)) NotConcrete
+      if isStableAndType then Realizable
+      else if !isConcrete(tp) then NotConcrete
       else boundsRealizability(tp).andAlso(memberRealizability(tp))
   }
 
