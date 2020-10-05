@@ -58,10 +58,10 @@ object JavaNullInterop {
     assert(sym.is(JavaDefined), "can only nullify java-defined members")
 
     // Some special cases when nullifying the type
-    if (isEnumValueDef || sym.name == nme.TYPE_)
+    if isEnumValueDef || sym.name == nme.TYPE_ then
       // Don't nullify the `TYPE` field in every class and Java enum instances
       tp
-    else if (sym.name == nme.toString_ || sym.isConstructor || hasNotNullAnnot(sym))
+    else if sym.name == nme.toString_ || sym.isConstructor || hasNotNullAnnot(sym) then
       // Don't nullify the return type of the `toString` method.
       // Don't nullify the return type of constructors.
       // Don't nullify the return type of methods with a not-null annotation.
@@ -126,7 +126,7 @@ object JavaNullInterop {
         val targs2 = targs map this
         outermostLevelAlreadyNullable = oldOutermostNullable
         val appTp2 = derivedAppliedType(appTp, tycon, targs2)
-        if (needsNull(tycon)) OrNull(appTp2) else appTp2
+        if needsNull(tycon) then OrNull(appTp2) else appTp2
       case ptp: PolyType =>
         derivedLambdaType(ptp)(ptp.paramInfos, this(ptp.resType))
       case mtp: MethodType =>

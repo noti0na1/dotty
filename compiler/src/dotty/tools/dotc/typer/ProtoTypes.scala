@@ -40,10 +40,8 @@ object ProtoTypes {
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
       (tpw relaxed_<:< ptw) ||
-        // If unsafeNulls is enabled, we relax the condition by striping all nulls from the types
-        // before subtype check. We use Feature to check language feature. However, when we search implicits,
-        // the context is from ContextualImplicits; hence, we don't know whether unsafeNulls is enabled.
-        // We have to add Mode.UnsafeNullConversion before implicit search.
+        // If unsafeNulls is enabled, we relax the condition by
+        // striping all nulls from the types before subtype check.
         Nullables.convertUnsafeNulls && tpw.isUnsafelyConvertable(ptw, true) ||
         viewExists(tp, pt)
 
@@ -55,9 +53,9 @@ object ProtoTypes {
       val ptw = pt.widenExpr
       necessarySubType(tpw, ptw) || tpw.isValueSubType(ptw) ||
       Nullables.convertUnsafeNulls && {
+        // See comments in `isCompatible`
         val tpwsn = tpw.stripAllNulls
         val ptwsn = ptw.stripAllNulls
-        // See comments in `isCompatible`
         necessarySubType(tpwsn, ptwsn) || tpwsn.isValueSubType(ptwsn) ||
           tpwsn.isUnsafelyNulltoAnyRef(ptwsn)
       } ||
