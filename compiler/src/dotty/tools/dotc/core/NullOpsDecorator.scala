@@ -72,13 +72,17 @@ object NullOpsDecorator {
     def isUnsafelyNulltoAnyRef(pt: Type)(using Context): Boolean =
       self.isNullType && pt.isNullableAfterErasure
 
+    def isUnsafeSubtype(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
+      val selfs = self.stripAllNulls
+      val pts = pt.stripAllNulls
+      if relaxedSubtype then
+        selfs relaxed_<:< pts
+      else
+        selfs <:< pts
+
     /** Can we convert a tree with type `self` to type `pt` unsafely.
      */
     def isUnsafelyConvertable(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
-      self.isUnsafelyNulltoAnyRef(pt) ||
-      (if relaxedSubtype then
-        self.stripAllNulls relaxed_<:< pt.stripAllNulls
-      else
-        self.stripAllNulls <:< pt.stripAllNulls)
+      self.isUnsafelyNulltoAnyRef(pt) || self.isUnsafeSubtype(pt, relaxedSubtype)
   }
 }

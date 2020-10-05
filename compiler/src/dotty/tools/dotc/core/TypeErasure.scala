@@ -516,13 +516,12 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
   }
 
   private def eraseArray(tp: Type)(using Context) = {
-    val defn.ArrayOf(elemtp) = tp
-    if (classify(elemtp).derivesFrom(defn.NullClass)) JavaArrayType(defn.ObjectType)
-    else {
-      val elemtp1 = if (ctx.explicitNulls) elemtp.stripNull else elemtp
-      if (isUnboundedGeneric(elemtp1) && !isJava) defn.ObjectType
-      else JavaArrayType(erasureFn(isJava, semiEraseVCs = false, isConstructor, wildcardOK)(elemtp1))
-    }
+    val defn.ArrayOf(elemtp0) = tp
+    val elemtp = if ctx.explicitNulls then elemtp0.stripNull else elemtp0
+    if classify(elemtp).derivesFrom(defn.NullClass) then JavaArrayType(defn.ObjectType)
+    else
+      if isUnboundedGeneric(elemtp) && !isJava then defn.ObjectType
+      else JavaArrayType(erasureFn(isJava, semiEraseVCs = false, isConstructor, wildcardOK)(elemtp))
   }
 
   private def erasePair(tp: Type)(using Context): Type = {

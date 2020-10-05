@@ -573,18 +573,18 @@ class Typer extends Namer
 
     def typeSelectOnTerm(using Context): Tree =
       val qual = typedExpr(tree.qualifier, selectionProto(tree.name, pt, this))
-      val qual1 = qual.tpe match {
-        case OrNull(tpe1) if config.Feature.enabled(nme.unsafeNulls) =>
-          qual.cast(AndType(qual.tpe, tpe1))
-        case tp =>
-          if ctx.explicitNulls &&
-            tp.isNullType &&
-            config.Feature.enabled(nme.unsafeNulls) &&
-            (tree.name == nme.eq || tree.name == nme.ne) then
-            // Allow selecting `eq` and `ne` on `Null` specially
-            qual.cast(defn.ObjectType)
-          else qual
-      }
+      val qual1 = if Nullables.convertUnsafeNulls then
+        qual.tpe match {
+          case OrNull(tpe1) =>
+            qual.cast(AndType(qual.tpe, tpe1))
+          case tp =>
+            if tp.isNullType
+              && (tree.name == nme.eq || tree.name == nme.ne) then
+              // Allow selecting `eq` and `ne` on `Null` specially
+              qual.cast(defn.ObjectType)
+            else qual
+        }
+      else qual
       typedSelect(tree, pt, qual1).withSpan(tree.span).computeNullable()
 
     def typeSelectOnType(qual: untpd.Tree)(using Context) =

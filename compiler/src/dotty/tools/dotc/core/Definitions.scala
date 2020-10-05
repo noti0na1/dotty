@@ -452,7 +452,7 @@ class Definitions {
     ScalaPackageClass, tpnme.Nothing, AbstractFinal, List(AnyType))
   def NothingType: TypeRef = NothingClass.typeRef
   @tu lazy val NullClass: ClassSymbol = {
-    val parent = if (ctx.explicitNulls) AnyType else ObjectType
+    val parent = if ctx.explicitNulls then AnyType else ObjectType
     enterCompleteClassSymbol(ScalaPackageClass, tpnme.Null, AbstractFinal, parent :: Nil)
   }
   def NullType: TypeRef = NullClass.typeRef
@@ -625,14 +625,14 @@ class Definitions {
   @tu lazy val ClassCastExceptionClass: ClassSymbol   = requiredClass("java.lang.ClassCastException")
     @tu lazy val ClassCastExceptionClass_stringConstructor: TermSymbol  = ClassCastExceptionClass.info.member(nme.CONSTRUCTOR).suchThat(_.info.firstParamTypes match {
       case List(pt) =>
-        val pt1 = if (ctx.explicitNulls) pt.stripNull else pt
+        val pt1 = if ctx.explicitNulls then pt.stripNull else pt
         pt1.isRef(StringClass)
       case _ => false
     }).symbol.asTerm
   @tu lazy val ArithmeticExceptionClass: ClassSymbol  = requiredClass("java.lang.ArithmeticException")
     @tu lazy val ArithmeticExceptionClass_stringConstructor: TermSymbol  = ArithmeticExceptionClass.info.member(nme.CONSTRUCTOR).suchThat(_.info.firstParamTypes match {
       case List(pt) =>
-        val pt1 = if (ctx.explicitNulls) pt.stripNull else pt
+        val pt1 = if ctx.explicitNulls then pt.stripNull else pt
         pt1.isRef(StringClass)
       case _ => false
     }).symbol.asTerm
@@ -1213,7 +1213,7 @@ class Definitions {
     idx == name.length || name(idx).isDigit && digitsOnlyAfter(name, idx + 1)
 
   def isBottomClass(cls: Symbol): Boolean =
-    if (ctx.explicitNulls && !ctx.phase.erasedTypes) cls == NothingClass
+    if ctx.explicitNulls && !ctx.phase.erasedTypes then cls == NothingClass
     else isBottomClassAfterErasure(cls)
 
   def isBottomClassAfterErasure(cls: Symbol): Boolean = cls == NothingClass || cls == NullClass
