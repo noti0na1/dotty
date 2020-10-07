@@ -518,9 +518,8 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
     val defn.ArrayOf(elemtp0) = tp
     val elemtp = if ctx.explicitNulls then elemtp0.stripNull else elemtp0
     if classify(elemtp).derivesFrom(defn.NullClass) then JavaArrayType(defn.ObjectType)
-    else
-      if isUnboundedGeneric(elemtp) && !isJava then defn.ObjectType
-      else JavaArrayType(erasureFn(isJava, semiEraseVCs = false, isConstructor, wildcardOK)(elemtp))
+    else if isUnboundedGeneric(elemtp) && !isJava then defn.ObjectType
+    else JavaArrayType(erasureFn(isJava, semiEraseVCs = false, isConstructor, wildcardOK)(elemtp))
   }
 
   private def erasePair(tp: Type)(using Context): Type = {
@@ -649,6 +648,11 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         tpnme.WILDCARD
       case tp: WildcardType =>
         sigName(tp.optBounds)
+      case OrNull(tp) =>
+        // If explicit nulls is enabled and the type is nullable union,
+        // we need to strip nulls before computing the signiture name.
+        // For example, the correct name of `String | Null` is `String` instead of `Object`.
+        sigName(tp)
       case _ =>
         val erasedTp = this(tp)
         assert(erasedTp ne tp, tp)
