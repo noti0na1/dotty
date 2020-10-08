@@ -35,7 +35,7 @@ There are some utility functions for nullable types in `NullOpsDecorator.scala` 
   ones (as `stripNull` does).
 - `isNullableUnion` determines whether `this` is a nullable union.
 - `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.
-- `isUnsafelyConvertable` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
+- `isUnsafelyConvertible` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
 
 Within `Types.scala`, we also defined an extractor `OrNull` to extract the non-nullable part of a nullable unions .
 

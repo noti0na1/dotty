@@ -82,7 +82,7 @@ object NullOpsDecorator {
 
     /** Can we convert a tree with type `self` to type `pt` unsafely.
      */
-    def isUnsafelyConvertable(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
+    def isUnsafelyConvertible(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
       self.isUnsafelyNulltoAnyRef(pt) || self.isUnsafeSubtype(pt, relaxedSubtype)
   }
 }
