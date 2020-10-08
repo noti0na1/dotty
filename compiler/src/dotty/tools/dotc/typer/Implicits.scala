@@ -306,8 +306,8 @@ object Implicits:
       val refs: List[ImplicitRef],
       val outerImplicits: ContextualImplicits,
       isImport: Boolean)(initctx: Context) extends ImplicitRefs(initctx) {
-    private val eligibleCache = EqHashMap[Type, List[Candidate]]()
-    private val eligibleCacheUnsafeNulls = EqHashMap[Type, List[Candidate]]()
+    private var eligibleCache: EqHashMap[Type, List[Candidate]] = null
+    private var eligibleCacheUnsafeNulls: EqHashMap[Type, List[Candidate]] = null
 
     /** The level increases if current context has a different owner or scope than
      *  the context of the next-outer ImplicitRefs. This is however disabled under
@@ -335,7 +335,19 @@ object Implicits:
 
     /** The implicit references that are eligible for type `tp`. */
     def eligible(tp: Type, enableUnsafeNulls: Boolean = false): List[Candidate] =
-      def searchWithCache(cache: EqHashMap[Type, List[Candidate]]) = {
+      if tp.hash == NotCached then
+        Stats.record(i"compute eligible not cached ${tp.getClass}")
+        Stats.record(i"compute eligible not cached")
+        computeEligible(tp, enableUnsafeNulls)
+      else
+        val cache = if enableUnsafeNulls then
+          if eligibleCacheUnsafeNulls == null then
+            eligibleCacheUnsafeNulls = EqHashMap[Type, List[Candidate]]()
+          eligibleCacheUnsafeNulls
+        else
+          if eligibleCache == null then
+            eligibleCache = EqHashMap[Type, List[Candidate]]()
+          eligibleCache
         val eligibles = cache.lookup(tp)
         if eligibles != null then
           Stats.record("cached eligible")
@@ -346,24 +358,16 @@ object Implicits:
           val result = computeEligible(tp, enableUnsafeNulls)
           cache(tp) = result
           result
-      }
-      if tp.hash == NotCached then
-        Stats.record(i"compute eligible not cached ${tp.getClass}")
-        Stats.record(i"compute eligible not cached")
-        computeEligible(tp, enableUnsafeNulls)
-      else if enableUnsafeNulls then
-        searchWithCache(eligibleCacheUnsafeNulls)
-      else
-        searchWithCache(eligibleCache)
 
     private def computeEligible(tp: Type, enableUnsafeNulls: Boolean): List[Candidate] = /*>|>*/ trace(i"computeEligible $tp in $refs%, %", implicitsDetailed) /*<|<*/ {
       if (monitored) record(s"check eligible refs in irefCtx", refs.length)
-      val c = if enableUnsafeNulls then ctx.addMode(Mode.UnsafeNullConversion) else ctx
-      val ownEligible = filterMatching(tp)(using c)
+      val ownEligible = inContext(if enableUnsafeNulls then ctx.addMode(Mode.UnsafeNullConversion) else ctx) {
+        filterMatching(tp)
+      }
       if (isOuterMost) ownEligible
-      else if ownEligible.isEmpty then outerImplicits.eligible(tp)
+      else if ownEligible.isEmpty then outerImplicits.eligible(tp, enableUnsafeNulls)
       else
-        val outerEligible = outerImplicits.eligible(tp)
+        val outerEligible = outerImplicits.eligible(tp, enableUnsafeNulls)
         if outerEligible.isEmpty then ownEligible
         else
           val shadowed = ownEligible.map(_.ref.implicitName).toSet
@@ -1310,7 +1314,7 @@ trait Implicits:
 
     /** All available implicits, without ranking */
     def allImplicits: Set[TermRef] = {
-      val contextuals = ctx.implicits.eligible(wildProto).map(tryImplicit(_, contextual = true))
+      val contextuals = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion)).map(tryImplicit(_, contextual = true))
       val inscope = implicitScope(wildProto).eligible.map(tryImplicit(_, contextual = false))
       (contextuals.toSet ++ inscope).collect {
         case success: SearchSuccess => success.ref

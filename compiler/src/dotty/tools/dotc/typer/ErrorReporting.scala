@@ -151,8 +151,9 @@ object ErrorReporting {
         case _ => Nil
       if foundWithoutNull then
         i""".
-          |Since explicit-nulls is enabled, ${qualType.widen} could have null value during runtime.
-          |If you want to select ${tree.name} without checking the nullity,
+          |Since explicit-nulls is enabled, the selection is rejected because
+          |${qualType.widen} could be null at runtime.
+          |If you want to select ${tree.name} without checking for a null value,
           |insert a .nn before .${tree.name} or import scala.language.unsafeNulls."""
       else if qualType.derivesFrom(defn.DynamicClass) then
         "\npossible cause: maybe a wrong Dynamic method signature?"

@@ -3474,9 +3474,9 @@ class Typer extends Namer
           val pt1 = if ctx.explicitNulls then pt.stripNull else pt
           pt1 match {
             case SAMType(sam)
-            if wtp <:< sam.toFunctionType() ||
-              (Nullables.convertUnsafeNulls &&
-                wtp.stripAllNulls <:< sam.toFunctionType().stripAllNulls) =>
+            if wtp <:< sam.toFunctionType()
+              || (Nullables.convertUnsafeNulls
+                && wtp.stripAllNulls <:< sam.toFunctionType().stripAllNulls) =>
               // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
               // but this prevents case blocks from implementing polymorphic partial functions,
               // since we do not know the result parameter a priori. Have to wait until the
@@ -3549,8 +3549,9 @@ class Typer extends Namer
 
       def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
         // If explicitNulls and unsafeNulls are enabled, and
-        if ctx.mode.is(Mode.UnsafeNullConversion) && pt.isValueType &&
-          treeTpe.isUnsafelyConvertable(pt)
+        if ctx.mode.is(Mode.UnsafeNullConversion)
+          && pt.isValueType
+          && treeTpe.isUnsafelyConvertible(pt)
         then tree.cast(pt)
         else fail
 
@@ -3573,8 +3574,8 @@ class Typer extends Namer
         if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
           if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
             // We want to allow `null` to `AnyRef` if UnsafeNullConversion is enabled
-            if !(ctx.mode.is(Mode.UnsafeNullConversion) &&
-              treeTpe.isUnsafelyConvertable(pt)) then
+            if !(ctx.mode.is(Mode.UnsafeNullConversion)
+              && treeTpe.isUnsafelyConvertible(pt)) then
               report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
             tree.cast(pt)
           else
