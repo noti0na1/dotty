@@ -39,11 +39,11 @@ object ProtoTypes {
     def isCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      (tpw relaxed_<:< ptw) ||
-        // If unsafeNulls is enabled, we relax the condition by
-        // striping all nulls from the types before subtype check.
-        Nullables.convertUnsafeNulls && tpw.isUnsafelyConvertable(ptw, true) ||
-        viewExists(tp, pt)
+      (tpw relaxed_<:< ptw)
+      // If unsafeNulls is enabled, we relax the condition by
+      // striping all nulls from the types before subtype check.
+      || Nullables.convertUnsafeNulls && tpw.isUnsafelyConvertible(ptw, true)
+      || viewExists(tp, pt)
 
     /** Like isCompatibe, but using a subtype comparison with necessary eithers
      *  that don't unnecessarily truncate the constraint space, returning false instead.
@@ -51,15 +51,17 @@ object ProtoTypes {
     def necessarilyCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      necessarySubType(tpw, ptw) || tpw.isValueSubType(ptw) ||
-      Nullables.convertUnsafeNulls && {
+      necessarySubType(tpw, ptw)
+      || tpw.isValueSubType(ptw)
+      || Nullables.convertUnsafeNulls && {
         // See comments in `isCompatible`
         val tpwsn = tpw.stripAllNulls
         val ptwsn = ptw.stripAllNulls
-        necessarySubType(tpwsn, ptwsn) || tpwsn.isValueSubType(ptwsn) ||
-          tpwsn.isUnsafelyNulltoAnyRef(ptwsn)
-      } ||
-      viewExists(tp, pt)
+        necessarySubType(tpwsn, ptwsn)
+        || tpwsn.isValueSubType(ptwsn)
+        || tpwsn.isUnsafelyNulltoAnyRef(ptwsn)
+      }
+      || viewExists(tp, pt)
 
     /** Test compatibility after normalization.
      *  Do this in a fresh typerstate unless `keepConstraint` is true.
