@@ -24,6 +24,7 @@ import config.Config
 import reporting._
 import collection.mutable
 import transform.TypeUtils._
+import typer.Nullables
 
 import scala.annotation.internal.sharable
 
@@ -781,7 +782,10 @@ object SymDenotations {
 
     /** Is this symbol a class of which `null` is a value? */
     final def isNullableClass(using Context): Boolean =
-      if (ctx.explicitNulls && !ctx.phase.erasedTypes) symbol == defn.NullClass || symbol == defn.AnyClass
+      if ctx.explicitNulls
+        && !Nullables.convertUnsafeNulls
+        && !ctx.phase.erasedTypes then
+        symbol == defn.NullClass || symbol == defn.AnyClass
       else isNullableClassAfterErasure
 
     /** Is this symbol a class of which `null` is a value after erasure?
