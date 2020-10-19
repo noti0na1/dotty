@@ -11,6 +11,7 @@ import collection.mutable
 import Denotations.SingleDenotation
 import util.SimpleIdentityMap
 import typer.ImportInfo.RootRef
+import typer.Nullables
 
 import scala.annotation.tailrec
 
@@ -1164,13 +1165,19 @@ class Definitions {
     idx == name.length || name(idx).isDigit && digitsOnlyAfter(name, idx + 1)
 
   def isBottomClass(cls: Symbol): Boolean =
-    if ctx.explicitNulls && !ctx.phase.erasedTypes then cls == NothingClass
+    if ctx.explicitNulls
+      && !Nullables.convertUnsafeNulls
+      && !ctx.phase.erasedTypes then
+      cls == NothingClass
     else isBottomClassAfterErasure(cls)
 
   def isBottomClassAfterErasure(cls: Symbol): Boolean = cls == NothingClass || cls == NullClass
 
   def isBottomType(tp: Type): Boolean =
-    if ctx.explicitNulls && !ctx.phase.erasedTypes then tp.derivesFrom(NothingClass)
+    if ctx.explicitNulls
+      && !Nullables.convertUnsafeNulls
+      && !ctx.phase.erasedTypes then
+      tp.derivesFrom(NothingClass)
     else isBottomTypeAfterErasure(tp)
 
   def isBottomTypeAfterErasure(tp: Type): Boolean =
