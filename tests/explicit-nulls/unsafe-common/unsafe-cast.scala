@@ -65,10 +65,4 @@ class S {
     n1(Array("a", null))
     n2(Array("a", null))
   }
-
-  def test[T <: AnyRef](x: T | Null): T = {
-    val y: T = x // error
-    val z: T = null // error
-    x // error
-  }
 }

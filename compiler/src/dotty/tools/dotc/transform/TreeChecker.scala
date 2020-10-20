@@ -558,7 +558,12 @@ class TreeChecker extends Phase with SymTransformer {
           !tree.isEmpty &&
           !isPrimaryConstructorReturn &&
           !pt.isInstanceOf[FunOrPolyProto])
-        assert(tree.tpe <:< pt, {
+        val tpMismatch =
+          if ctx.explicitNulls then
+            tree.tpe.widen.isUnsafelyConvertible(pt)
+          else
+            tree.tpe <:< pt
+        assert(tpMismatch, {
           val mismatch = TypeMismatch(tree.tpe, pt)
           i"""|${mismatch.msg}
               |found: ${infoStr(tree.tpe)}

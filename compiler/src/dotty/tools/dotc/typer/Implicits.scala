@@ -131,9 +131,7 @@ object Implicits:
             else if (mt.paramInfos.lengthCompare(1) == 0 && {
                   var formal = widenSingleton(mt.paramInfos.head)
                   if (approx) formal = wildApprox(formal)
-                  explore((argType relaxed_<:< formal.widenExpr) ||
-                    Nullables.convertUnsafeNulls &&
-                      argType.isUnsafeSubtype(formal.widenExpr, true))
+                  explore(argType relaxed_<:< formal.widenExpr)
                 })
               Candidate.Conversion
             else

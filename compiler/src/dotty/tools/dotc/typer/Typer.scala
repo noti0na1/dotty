@@ -3517,14 +3517,6 @@ class Typer extends Namer
 
       val treeTpe = tree.tpe
 
-      def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
-        // If explicitNulls and unsafeNulls are enabled, and
-        if ctx.mode.is(Mode.UnsafeNullConversion)
-          && pt.isValueType
-          && treeTpe.isUnsafelyConvertible(pt)
-        then tree.cast(pt)
-        else fail
-
       def cannotFind(failure: SearchFailure) =
         if (pt.isInstanceOf[ProtoType] && !failure.isAmbiguous) then
           // don't report the failure but return the tree unchanged. This
@@ -3543,14 +3535,9 @@ class Typer extends Namer
       inContext(searchCtx) {
         if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
           if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
-            // We want to allow `null` to `AnyRef` if UnsafeNullConversion is enabled
-            if !(ctx.mode.is(Mode.UnsafeNullConversion)
-              && treeTpe.isUnsafelyConvertible(pt)) then
-              report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
-            tree.cast(pt)
-          else
-            searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
-        else tryUnsafeNullConver(recover(NoMatchingImplicits))
+            report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
+          searchTree(tree)(failure => cannotFind(failure))
+        else recover(NoMatchingImplicits)
       }
     }
 
