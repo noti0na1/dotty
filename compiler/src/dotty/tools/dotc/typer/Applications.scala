@@ -1075,7 +1075,7 @@ trait Applications extends Compatibility {
     val isNamed = hasNamedArg(tree.args)
     val typedArgs = if (isNamed) typedNamedArgs(tree.args) else tree.args.mapconserve(typedType(_))
     record("typedTypeApply")
-    typedFunPart(tree.fun, PolyProto(typedArgs, pt)) match {
+    val app = typedFunPart(tree.fun, PolyProto(typedArgs, pt)) match {
       case IntegratedTypeArgs(app) =>
         app
       case _: TypeApply if !ctx.isAfterTyper =>
@@ -1098,6 +1098,8 @@ trait Applications extends Compatibility {
         if (typedFn.tpe eq TryDynamicCallType) tryDynamicTypeApply()
         else assignType(cpy.TypeApply(tree)(typedFn, typedArgs), typedFn, typedArgs)
     }
+    app.putAttachment(Nullables.UnsafeNullsKey, config.Feature.enabled(nme.unsafeNulls))
+    app
   }
 
   /** Rewrite `new Array[T](....)` if T is an unbounded generic to calls to newGenericArray.

@@ -14,6 +14,7 @@ import Symbols._, SymUtils._, NameOps._
 import ContextFunctionResults.annotateContextResults
 import config.Printers.typr
 import reporting._
+import typer.Nullables
 
 object PostTyper {
   val name: String = "posttyper"
@@ -299,7 +300,11 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           args.foreach(checkInferredWellFormed)
           if (fn.symbol != defn.ChildAnnot.primaryConstructor)
             // Make an exception for ChildAnnot, which should really have AnyKind bounds
-            Checking.checkBounds(args, fn.tpe.widen.asInstanceOf[PolyType])
+            val checkCtx = if tree.attachmentOrElse(Nullables.UnsafeNullsKey, false) then
+              ctx.addMode(Mode.UnsafeNullConversion)
+            else
+              ctx
+            Checking.checkBounds(args, fn.tpe.widen.asInstanceOf[PolyType])(using checkCtx)
           fn match {
             case sel: Select =>
               val args1 = transform(args)

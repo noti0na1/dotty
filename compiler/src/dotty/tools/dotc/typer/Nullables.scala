@@ -26,6 +26,8 @@ object Nullables:
       config.Feature.enabled(nme.unsafeNulls) ||
       ctx.mode.is(Mode.UnsafeNullConversion))
 
+  val UnsafeNullsKey = Property.StickyKey[Boolean]
+
   /** A set of val or var references that are known to be not null, plus a set of
    *  variable references that are not known (anymore) to be not null
    */

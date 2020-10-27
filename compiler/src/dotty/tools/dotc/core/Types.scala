@@ -3125,7 +3125,7 @@ object Types {
    */
   object OrNull {
     def apply(tp: Type)(using Context) =
-      OrType(tp, defn.NullType, soft = false)
+      if tp.isNullType then tp else OrType(tp, defn.NullType, soft = false)
     def unapply(tp: Type)(using Context): Option[Type] =
       if ctx.explicitNulls then
         val tp1 = tp.stripNull

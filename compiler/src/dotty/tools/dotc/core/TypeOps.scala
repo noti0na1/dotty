@@ -19,6 +19,7 @@ import typer.ProtoTypes._
 import typer.ForceDegree
 import typer.Inferencing._
 import typer.IfBottom
+import typer.Nullables
 import reporting.TestingReporter
 
 import scala.annotation.internal.sharable
@@ -598,11 +599,18 @@ object TypeOps:
       val hiBound = instantiate(bounds.hi, skolemizedArgTypes)
       val loBound = instantiate(bounds.lo, skolemizedArgTypes)
 
-      def check(using Context) = {
+      def check(lo: Type, hi: Type, loBound: Type, hiBound: Type)(using Context) = {
         if (!(lo <:< hiBound)) violations += ((arg, "upper", hiBound))
         if (!(loBound <:< hi)) violations += ((arg, "lower", loBound))
       }
-      check(using checkCtx)
+      
+      inContext(checkCtx) {
+        if Nullables.convertUnsafeNulls
+          && (lo.isNullType || loBound.isNullType) then
+          check(OrNull(lo), OrNull(hi), OrNull(loBound), OrNull(hiBound))
+        else
+          check(lo, hi, loBound, hiBound)
+      }
     }
 
     def loop(args: List[Tree], boundss: List[TypeBounds]): Unit = args match
