@@ -372,7 +372,11 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           else if (tree.tpt.symbol == defn.orType)
             () // nothing to do
           else
-            Checking.checkAppliedType(tree)
+            val checkCtx = if tree.attachmentOrElse(Nullables.UnsafeNullsKey, false) then
+              ctx.addMode(Mode.UnsafeNullConversion)
+            else
+              ctx
+            Checking.checkAppliedType(tree)(using checkCtx)
           super.transform(tree)
         case SingletonTypeTree(ref) =>
           Checking.checkRealizable(ref.tpe, ref.srcPos)
