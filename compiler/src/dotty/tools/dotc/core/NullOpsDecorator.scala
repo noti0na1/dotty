@@ -65,6 +65,8 @@ object NullOpsDecorator {
       case tp: TypeProxy => tp.underlying.isNullableAfterErasure
       case OrType(lhs, rhs) =>
         lhs.isNullableAfterErasure || rhs.isNullableAfterErasure
+      case AndType(lhs, rhs) =>
+        lhs.isNullableAfterErasure && rhs.isNullableAfterErasure
       case _ =>
         self.isNullType || self <:< defn.ObjectType
     }
