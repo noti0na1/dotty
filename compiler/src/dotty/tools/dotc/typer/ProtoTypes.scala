@@ -15,7 +15,7 @@ import Uniques._
 import config.Printers.typr
 import util.SourceFile
 import util.Property
-import TypeComparer.necessarySubType
+import TypeComparer._
 
 import scala.annotation.internal.sharable
 
@@ -39,10 +39,12 @@ object ProtoTypes {
     def isCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      (tpw relaxed_<:< ptw)
-      // If unsafeNulls is enabled, we relax the condition by
-      // striping all nulls from the types before subtype check.
-      || Nullables.convertUnsafeNulls && tpw.isUnsafelyConvertible(ptw, true)
+      (if Nullables.convertUnsafeNulls then
+        // If unsafeNulls is enabled, we relax the condition by
+        // striping all nulls from the types before subtype check.
+        topLevelSubTypeIgnoringNulls(tpw, ptw)
+      else tpw <:< ptw)
+      || tpw.isValueSubType(ptw)
       || viewExists(tp, pt)
 
     /** Like isCompatibe, but using a subtype comparison with necessary eithers
@@ -51,16 +53,10 @@ object ProtoTypes {
     def necessarilyCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      necessarySubType(tpw, ptw)
+      (if Nullables.convertUnsafeNulls then
+        necessarySubTypeIgnoringNulls(tpw, ptw)
+      else necessarySubType(tpw, ptw))
       || tpw.isValueSubType(ptw)
-      || Nullables.convertUnsafeNulls && {
-        // See comments in `isCompatible`
-        val tpwsn = tpw.stripAllNulls
-        val ptwsn = ptw.stripAllNulls
-        necessarySubType(tpwsn, ptwsn)
-        || tpwsn.isValueSubType(ptwsn)
-        || tpwsn.isUnsafelyNulltoAnyRef(ptwsn)
-      }
       || viewExists(tp, pt)
 
     /** Test compatibility after normalization.

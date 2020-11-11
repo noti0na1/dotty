@@ -170,6 +170,8 @@ object Types {
       case tp: ExprType => tp.resultType.isStable
       case tp: AnnotatedType => tp.parent.isStable
       case tp: AndType =>
+        // if one side is stable and another side is realizable or a subtype,
+        // then the AndType is stable
         def checkAndStable(x: Type, y: Type) =
           x.isStable && ((realizability(y) eq Realizable) || y <:< x.widen)
         checkAndStable(tp.tp1, tp.tp2) || checkAndStable(tp.tp2, tp.tp1)

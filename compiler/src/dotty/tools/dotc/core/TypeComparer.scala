@@ -65,6 +65,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   private var useNecessaryEither = false
 
+  private var ignoreNulls = false
+
   /** Is a subtype check in progress? In that case we may not
    *  permanently instantiate type variables, because the corresponding
    *  constraint might still be retracted and the instantiation should
@@ -133,10 +135,22 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     }
   }
 
+  def topLevelSubTypeIgnoringNulls(tp1: Type, tp2: Type): Boolean =
+    val saved = ignoreNulls
+    ignoreNulls = true
+    try topLevelSubType(tp1, tp2)
+    finally ignoreNulls = saved
+
   def necessarySubType(tp1: Type, tp2: Type): Boolean =
     val saved = useNecessaryEither
     useNecessaryEither = true
     try topLevelSubType(tp1, tp2)
+    finally useNecessaryEither = saved
+
+  def necessarySubTypeIgnoringNulls(tp1: Type, tp2: Type): Boolean =
+    val saved = useNecessaryEither
+    useNecessaryEither = true
+    try topLevelSubTypeIgnoringNulls(tp1, tp2)
     finally useNecessaryEither = saved
 
   def testSubType(tp1: Type, tp2: Type): CompareResult =
@@ -336,7 +350,11 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case AndType(tp21, tp22) =>
         recur(tp1, tp21) && recur(tp1, tp22)
       case OrType(tp21, tp22) =>
-        if (tp21.stripTypeVar eq tp22.stripTypeVar) recur(tp1, tp21)
+        if ignoreNulls && tp22.isNullType then
+          tp1.isNullType || recur(tp1, tp21)
+        else if ignoreNulls && tp21.isNullType then
+          tp1.isNullType || recur(tp1, tp22)
+        else if tp21.stripTypeVar eq tp22.stripTypeVar then recur(tp1, tp21)
         else secondTry
       case TypeErasure.ErasedValueType(tycon1, underlying2) =>
         def compareErasedValueType = tp1 match {
@@ -466,10 +484,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case OrType(tp1, tp2) => containsAnd(tp1) || containsAnd(tp2)
           case _ => false
 
-        widenOK
-        || joinOK
-        || (tp1.isSoft || constrainRHSVars(tp2)) && recur(tp11, tp2) && recur(tp12, tp2)
-        || containsAnd(tp1) && recur(tp1.join, tp2)
+        if ignoreNulls && tp12.isNullType then recur(tp11, tp2)
+        else if ignoreNulls && tp11.isNullType then recur(tp12, tp2)
+        else widenOK
+          || joinOK
+          || (tp1.isSoft || constrainRHSVars(tp2)) && recur(tp11, tp2) && recur(tp12, tp2)
+          || containsAnd(tp1) && recur(tp1.join, tp2)
      case tp1: MatchType =>
         val reduced = tp1.reduced
         if (reduced.exists) recur(reduced, tp2) else thirdTry
@@ -635,6 +655,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case Some(b) => return b
           case _ =>
 
+        if ignoreNulls then
+          if tp22.isNullType then return recur(tp1, tp21)
+          if tp21.isNullType then return recur(tp1, tp22)
+
         // The next clause handles a situation like the one encountered in i2745.scala.
         // We have:
         //
@@ -757,7 +781,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             isSubType(hi1, tp2, approx.addLow) || compareGADT || tryLiftedToThis1
           case _ =>
             def isNullable(tp: Type): Boolean = tp.widenDealias match {
-              case tp: TypeRef => tp.symbol.isNullableClass
+              case tp: TypeRef =>
+                if ignoreNulls then tp.symbol.isNullableClassAfterErasure
+                else tp.symbol.isNullableClass
               case tp: RefinedOrRecType => isNullable(tp.parent)
               case tp: AppliedType => isNullable(tp.tycon)
               case AndType(tp1, tp2) => isNullable(tp1) && isNullable(tp2)
@@ -2586,8 +2612,14 @@ object TypeComparer {
   def topLevelSubType(tp1: Type, tp2: Type)(using Context): Boolean =
     comparing(_.topLevelSubType(tp1, tp2))
 
+  def topLevelSubTypeIgnoringNulls(tp1: Type, tp2: Type)(using Context): Boolean =
+    comparing(_.topLevelSubTypeIgnoringNulls(tp1, tp2))
+
   def necessarySubType(tp1: Type, tp2: Type)(using Context): Boolean =
     comparing(_.necessarySubType(tp1, tp2))
+
+  def necessarySubTypeIgnoringNulls(tp1: Type, tp2: Type)(using Context): Boolean =
+    comparing(_.necessarySubTypeIgnoringNulls(tp1, tp2))
 
   def isSubType(tp1: Type, tp2: Type)(using Context): Boolean =
     comparing(_.isSubType(tp1, tp2))

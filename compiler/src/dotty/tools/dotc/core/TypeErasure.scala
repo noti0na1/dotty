@@ -648,11 +648,11 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
         tpnme.WILDCARD
       case tp: WildcardType =>
         sigName(tp.optBounds)
-      case OrNull(tp) =>
-        // If explicit nulls is enabled and the type is nullable union,
-        // we need to strip nulls before computing the signiture name.
-        // For example, the correct name of `String | Null` is `String` instead of `Object`.
-        sigName(tp)
+      // case OrType(tp1) =>
+      //   // If explicit nulls is enabled and the type is nullable union,
+      //   // we need to strip nulls before computing the signiture name.
+      //   // For example, the correct name of `String | Null` is `String` instead of `Object`.
+      //   sigName(tp1)
       case _ =>
         val erasedTp = this(tp)
         assert(erasedTp ne tp, tp)

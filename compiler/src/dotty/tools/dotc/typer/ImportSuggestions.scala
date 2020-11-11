@@ -157,7 +157,7 @@ trait ImportSuggestions:
     // are in the implicit scope of `pt`.
     val alreadyAvailableCandidates: Set[Symbol] = {
       val wildProto = wildApprox(pt)
-      val contextualCandidates = ctx.implicits.eligible(wildProto)
+      val contextualCandidates = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion))
       val implicitScopeCandidates = ctx.run.implicitScope(wildProto).eligible
       val allCandidates = contextualCandidates ++ implicitScopeCandidates
       allCandidates.map(_.implicitRef.underlyingRef.symbol).toSet
