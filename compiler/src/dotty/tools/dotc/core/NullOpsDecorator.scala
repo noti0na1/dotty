@@ -58,8 +58,8 @@ object NullOpsDecorator {
       stripped ne self
     }
 
-    /** Can the type has null value after erasure?
-     */
+    /** Can the type has null value after erasure? */
+    // TODO
     def isNullableAfterErasure(using Context): Boolean =  self match {
       case tp: ClassInfo => tp.cls.isNullableClassAfterErasure
       case tp: TypeProxy => tp.underlying.isNullableAfterErasure
@@ -74,17 +74,9 @@ object NullOpsDecorator {
     def isUnsafelyNulltoAnyRef(pt: Type)(using Context): Boolean =
       self.isNullType && pt.isNullableAfterErasure
 
-    def isUnsafeSubtype(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
-      val selfs = self.stripAllNulls
-      val pts = pt.stripAllNulls
-      if relaxedSubtype then
-        selfs relaxed_<:< pts
-      else
-        selfs <:< pts
-
-    /** Can we convert a tree with type `self` to type `pt` unsafely.
-     */
+    /** Can we convert a tree with type `self` to type `pt` unsafely. */
     def isUnsafelyConvertible(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
-      self.isUnsafelyNulltoAnyRef(pt) || self.isUnsafeSubtype(pt, relaxedSubtype)
+      self.isUnsafelyNulltoAnyRef(pt)
+      || TypeComparer.topLevelSubTypeIgnoringNulls(self, pt)
   }
 }

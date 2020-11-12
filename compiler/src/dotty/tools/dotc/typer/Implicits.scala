@@ -135,7 +135,7 @@ object Implicits:
                   if (approx) formal = wildApprox(formal)
                   explore((argType relaxed_<:< formal.widenExpr) ||
                     Nullables.convertUnsafeNulls &&
-                      argType.isUnsafeSubtype(formal.widenExpr, true))
+                      argType.isUnsafelyConvertible(formal.widenExpr))
                 })
               Candidate.Conversion
             else
