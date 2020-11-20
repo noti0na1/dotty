@@ -23,6 +23,7 @@ import PickleBuffer._
 import PickleFormat._
 import Decorators._
 import TypeApplications._
+import NullOpsDecorator._
 import classfile.ClassfileParser
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -769,7 +770,12 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         else if (sym.typeParams.nonEmpty) tycon.EtaExpand(sym.typeParams)
         else tycon
       case TYPEBOUNDStpe =>
-        TypeBounds(readTypeRef(), readTypeRef())
+        val lo = readTypeRef()
+        val hi0 = readTypeRef()
+        val hi =
+          if ctx.explicitNulls && lo.isNullType && hi0.isNullableAfterErasure
+          then OrNull(hi0) else hi0
+        TypeBounds(lo, hi)
       case REFINEDtpe =>
         val clazz = readSymbolRef().asClass
         val decls = symScope(clazz)
@@ -1247,7 +1253,10 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
 
       case TYPEBOUNDStree =>
         val lo = readTreeRef()
-        val hi = readTreeRef()
+        val hi0 = readTreeRef()
+        val hi =
+          if ctx.explicitNulls && lo.tpe.isNullType && hi0.tpe.isNullableAfterErasure
+          then TypeTree(OrNull(hi0.tpe)) else hi0
         TypeBoundsTree(lo, hi)
 
       case EXISTENTIALTYPEtree =>

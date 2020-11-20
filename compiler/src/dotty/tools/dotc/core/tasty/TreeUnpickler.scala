@@ -29,6 +29,7 @@ import util.SourceFile
 import ast.{TreeTypeMap, Trees, tpd, untpd}
 import Trees._
 import Decorators._
+import NullOpsDecorator._
 import transform.SymUtils._
 
 import dotty.tools.tasty.{TastyBuffer, TastyReader}
@@ -362,7 +363,12 @@ class TreeUnpickler(reader: TastyReader,
               if nothingButMods(end) then
                 if lo.isMatch then MatchAlias(readVariances(lo))
                 else TypeAlias(readVariances(lo))
-              else TypeBounds(lo, readVariances(readType()))
+              else
+                val hi0 = readVariances(readType())
+                val hi =
+                  if ctx.explicitNulls && lo.isNullType && hi0.isNullableAfterErasure
+                  then OrNull(hi0) else hi0
+                TypeBounds(lo, hi)
             case ANNOTATEDtype =>
               AnnotatedType(readType(), Annotation(readTerm()))
             case ANDtype =>
@@ -1239,7 +1245,10 @@ class TreeUnpickler(reader: TastyReader,
               MatchTypeTree(bound, scrut, readCases(end))
             case TYPEBOUNDStpt =>
               val lo = readTpt()
-              val hi = if currentAddr == end then lo else readTpt()
+              val hi0 = if currentAddr == end then lo else readTpt()
+              val hi =
+                if ctx.explicitNulls && lo.tpe.isNullType && hi0.tpe.isNullableAfterErasure
+                then TypeTree(OrNull(hi0.tpe)) else hi0
               val alias = if currentAddr == end then EmptyTree else readTpt()
               TypeBoundsTree(lo, hi, alias)
             case HOLE =>

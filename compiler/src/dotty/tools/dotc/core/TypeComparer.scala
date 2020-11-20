@@ -351,9 +351,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         recur(tp1, tp21) && recur(tp1, tp22)
       case OrType(tp21, tp22) =>
         if ignoreNulls && tp22.isNullType then
-          tp1.isNullType || recur(tp1, tp21)
+          tp1.isNullType || tp1.isExactlyNothing || recur(tp1, tp21)
         else if ignoreNulls && tp21.isNullType then
-          tp1.isNullType || recur(tp1, tp22)
+          tp1.isNullType || tp1.isExactlyNothing || recur(tp1, tp22)
         else if tp21.stripTypeVar eq tp22.stripTypeVar then recur(tp1, tp21)
         else secondTry
       case TypeErasure.ErasedValueType(tycon1, underlying2) =>
@@ -484,9 +484,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case OrType(tp1, tp2) => containsAnd(tp1) || containsAnd(tp2)
           case _ => false
 
-        if ignoreNulls && tp12.isNullType then recur(tp11, tp2)
-        else if ignoreNulls && tp11.isNullType then recur(tp12, tp2)
-        else widenOK
+        // if ignoreNulls && tp12.isNullType then recur(tp2, defn.AnyRef) recur(tp11, tp2)
+        // else if ignoreNulls && tp11.isNullType then recur(tp12, tp2)
+        // else
+        widenOK
           || joinOK
           || (tp1.isSoft || constrainRHSVars(tp2)) && recur(tp11, tp2) && recur(tp12, tp2)
           || containsAnd(tp1) && recur(tp1.join, tp2)
@@ -656,8 +657,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case _ =>
 
         if ignoreNulls then
-          if tp22.isNullType then return recur(tp1, tp21)
-          if tp21.isNullType then return recur(tp1, tp22)
+          if tp22.isNullType then return tp1.isNullType || tp1.isExactlyNothing || recur(tp1, tp21)
+          if tp21.isNullType then return tp1.isNullType || tp1.isExactlyNothing || recur(tp1, tp22)
 
         // The next clause handles a situation like the one encountered in i2745.scala.
         // We have:

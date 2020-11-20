@@ -269,7 +269,7 @@ class OrderingConstraint(private val boundsMap: ParamBounds,
     val nparams = poly.paramNames.length
     val entries1 = new Array[Type](nparams * 2)
     poly.paramInfos.copyToArray(entries1, 0)
-    Nullables.nullifyUpperBounds(entries1)
+    // Nullables.nullifyUpperBounds(entries1)
     tvars.copyToArray(entries1, nparams)
     newConstraint(boundsMap.updated(poly, entries1), lowerMap, upperMap).init(poly)
   }

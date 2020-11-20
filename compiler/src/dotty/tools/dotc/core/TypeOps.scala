@@ -603,13 +603,14 @@ object TypeOps:
         if (!(lo <:< hiBound)) violations += ((arg, "upper", hiBound))
         if (!(loBound <:< hi)) violations += ((arg, "lower", loBound))
       }
-      
+
       inContext(checkCtx) {
-        if Nullables.convertUnsafeNulls
-          && (lo.isNullType || loBound.isNullType) then
-          check(OrNull(lo), OrNull(hi), OrNull(loBound), OrNull(hiBound))
-        else
-          check(lo, hi, loBound, hiBound)
+        // if Nullables.convertUnsafeNulls
+        //   && (lo.isNullType || loBound.isNullType) then
+        //   check(OrNull(lo), OrNull(hi), OrNull(loBound), OrNull(hiBound))
+        // else
+        //   check(lo, hi, loBound, hiBound)
+        check(lo, hi, loBound, hiBound)
       }
     }
 

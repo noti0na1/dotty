@@ -26,19 +26,19 @@ object Nullables:
       config.Feature.enabled(nme.unsafeNulls) ||
       ctx.mode.is(Mode.UnsafeNullConversion))
 
-  def nullifyUpperBounds(tps: Array[Type])(using Context): Unit = {
-    if convertUnsafeNulls then
-      var i = 0
-      while i < tps.length do
-        tps(i) match {
-          case bound: TypeBounds =>
-            if bound.lo.isNullType && bound.hi.isNullableAfterErasure then
-              tps(i) = bound.derivedTypeBounds(bound.lo, OrNull(bound.hi))
-          case _ =>
-        }
-        i += 1
-  }
-
+  // def nullifyUpperBounds(tps: Array[Type])(using Context): Unit = {
+  //   if convertUnsafeNulls then
+  //     var i = 0
+  //     while i < tps.length do
+  //       tps(i) match {
+  //         case bound: TypeBounds =>
+  //           if bound.lo.isNullType && bound.hi.isNullableAfterErasure then
+  //             tps(i) = bound.derivedTypeBounds(bound.lo, OrNull(bound.hi))
+  //         case _ =>
+  //       }
+  //       i += 1
+  // }
+  
   val UnsafeNullsKey = Property.StickyKey[Boolean]
 
   /** A set of val or var references that are known to be not null, plus a set of
