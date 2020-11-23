@@ -334,7 +334,7 @@ object Implicits:
     }
 
     /** The implicit references that are eligible for type `tp`. */
-    def eligible(tp: Type, enableUnsafeNulls: Boolean = false): List[Candidate] =
+    def eligible(tp: Type, enableUnsafeNulls: Boolean): List[Candidate] =
       if tp.hash == NotCached then
         Stats.record(i"compute eligible not cached ${tp.getClass}")
         Stats.record(i"compute eligible not cached")

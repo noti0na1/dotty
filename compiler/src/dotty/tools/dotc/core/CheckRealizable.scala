@@ -116,9 +116,11 @@ class CheckRealizable(using Context) {
     case _: SingletonType | NoPrefix =>
       Realizable
     case tp =>
+      // TODO
+      // check the realizability of a special AndType
       def checkAndType(x: TermRef, y: Type) =
         (realizability(x) eq Realizable) && (y <:< x.widen)
-      val isStableAndType = tp match {
+      val isRealizableAndType = tp match {
         case AndType(tr: TermRef, tp1) =>
           checkAndType(tr, tp1)
         case AndType(tp1, tr: TermRef) =>
@@ -132,7 +134,7 @@ class CheckRealizable(using Context) {
         case tp: OrType  => isConcrete(tp.tp1) && isConcrete(tp.tp2)
         case _ => false
       }
-      if isStableAndType then Realizable
+      if isRealizableAndType then Realizable
       else if !isConcrete(tp) then NotConcrete
       else boundsRealizability(tp).andAlso(memberRealizability(tp))
   }
