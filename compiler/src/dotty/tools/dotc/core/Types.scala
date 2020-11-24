@@ -20,7 +20,7 @@ import Denotations._
 import Periods._
 import CheckRealizable._
 import Variances.{Variance, varianceFromInt, varianceToInt, setStructuralVariances, Invariant}
-import typer.Nullables
+import typer.Nullables.useUnsafeNullsSubTypeIf
 import util.Stats._
 import util.SimpleIdentitySet
 import ast.tpd._
@@ -1024,17 +1024,19 @@ object Types {
      *  @param matchLoosely   if true the types `=> T` and `()T` are seen as overriding each other.
      *  @param checkClassInfo if true we check that ClassInfos are within bounds of abstract types
      */
-    final def overrides(that: Type, matchLoosely: => Boolean, checkClassInfo: Boolean = true)(using Context): Boolean = {
+    final def overrides(that: Type, matchLoosely: => Boolean,
+      checkClassInfo: Boolean = true, relaxedNulls: Boolean = false)(using Context): Boolean = {
       def widenNullary(tp: Type) = tp match {
         case tp @ MethodType(Nil) => tp.resultType
         case _ => tp
       }
       !checkClassInfo && this.isInstanceOf[ClassInfo]
-      || (this.widenExpr frozen_<:< that.widenExpr)
+      || useUnsafeNullsSubTypeIf(relaxedNulls)(this.widenExpr frozen_<:< that.widenExpr)
       || matchLoosely && {
            val this1 = widenNullary(this)
            val that1 = widenNullary(that)
-           ((this1 `ne` this) || (that1 `ne` that)) && this1.overrides(that1, false, checkClassInfo)
+           ((this1 `ne` this) || (that1 `ne` that)) 
+           && this1.overrides(that1, false, checkClassInfo, relaxedNulls)
          }
     }
 
@@ -1056,7 +1058,7 @@ object Types {
      */
     def matches(that: Type)(using Context): Boolean = {
       record("matches")
-      Nullables.useUnsafeNullsSubTypeIf(ctx.explicitNulls)(
+      useUnsafeNullsSubTypeIf(ctx.explicitNulls)(
         TypeComparer.matchesType(this, that, relaxed = !ctx.phase.erasedTypes))
     }
 

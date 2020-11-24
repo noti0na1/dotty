@@ -252,10 +252,9 @@ object RefChecks {
         else
           member.name.is(DefaultGetterName) // default getters are not checked for compatibility
           || memberTp.overrides(otherTp,
-              member.matchNullaryLoosely || other.matchNullaryLoosely || fallBack)
-          // releaxed override check for explicit nulls
-          || (ctx.explicitNulls && (member.is(JavaDefined) || other.is(JavaDefined)) &&
-              memberTp.stripAllNulls.overrides(otherTp.stripAllNulls, true))
+              member.matchNullaryLoosely || other.matchNullaryLoosely || fallBack,
+              // releaxed override check for explicit nulls
+              relaxedNulls = ctx.explicitNulls && (member.is(JavaDefined) || other.is(JavaDefined)))
       catch case ex: MissingType =>
         // can happen when called with upwardsSelf as qualifier of memberTp and otherTp,
         // because in that case we might access types that are not members of the qualifier.
