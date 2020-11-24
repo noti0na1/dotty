@@ -366,7 +366,7 @@ class TreeUnpickler(reader: TastyReader,
               else
                 val hi0 = readVariances(readType())
                 val hi =
-                  if ctx.explicitNulls && lo.isNullType && hi0.isNullableAfterErasure
+                  if ctx.explicitNulls && lo.isBottomTypeAfterErasure && hi0.isNullableAfterErasure
                   then OrNull(hi0) else hi0
                 TypeBounds(lo, hi)
             case ANNOTATEDtype =>
@@ -1252,7 +1252,7 @@ class TreeUnpickler(reader: TastyReader,
               val lo = readTpt()
               val hi0 = if currentAddr == end then lo else readTpt()
               val hi =
-                if ctx.explicitNulls && lo.tpe.isNullType && hi0.tpe.isNullableAfterErasure
+                if ctx.explicitNulls && lo.tpe.isBottomTypeAfterErasure && hi0.tpe.isNullableAfterErasure
                 then TypeTree(OrNull(hi0.tpe)) else hi0
               val alias = if currentAddr == end then EmptyTree else readTpt()
               TypeBoundsTree(lo, hi, alias)

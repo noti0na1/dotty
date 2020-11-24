@@ -61,6 +61,9 @@ object Feature:
   def dynamicsEnabled(using Context): Boolean =
     enabled(nme.dynamics)
 
+  def unsafeNullsEnabled(using Context) = 
+    ctx.explicitNulls && enabled(nme.unsafeNulls)
+
   def dependentEnabled(using Context) =
     enabled(dependent, defn.LanguageExperimentalModule.moduleClass)
 

@@ -10,8 +10,10 @@ import Trees._
 import Constants._
 import util.{Stats, SimpleIdentityMap}
 import Decorators._
+import Nullables.useUnsafeNullsSubTypeIf
 import NullOpsDecorator._
 import Uniques._
+import config.Feature
 import config.Printers.typr
 import util.SourceFile
 import util.Property
@@ -39,10 +41,10 @@ object ProtoTypes {
     def isCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      (tpw relaxed_<:< ptw)
-      // If unsafeNulls is enabled, we relax the condition by
-      // striping all nulls from the types before subtype check.
-      || Nullables.convertUnsafeNulls && tpw.isUnsafelyConvertible(ptw, true)
+      useUnsafeNullsSubTypeIf(
+        Feature.unsafeNullsEnabled
+        || ctx.mode.is(Mode.UnsafeNullConversion))(
+          tpw relaxed_<:< ptw)
       || viewExists(tp, pt)
 
     /** Like isCompatibe, but using a subtype comparison with necessary eithers
@@ -51,16 +53,11 @@ object ProtoTypes {
     def necessarilyCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      necessarySubType(tpw, ptw)
+      useUnsafeNullsSubTypeIf(
+        Feature.unsafeNullsEnabled
+        || ctx.mode.is(Mode.UnsafeNullConversion))(
+          necessarySubType(tpw, ptw))
       || tpw.isValueSubType(ptw)
-      || Nullables.convertUnsafeNulls && {
-        // See comments in `isCompatible`
-        val tpwsn = tpw.stripAllNulls
-        val ptwsn = ptw.stripAllNulls
-        necessarySubType(tpwsn, ptwsn)
-        || tpwsn.isValueSubType(ptwsn)
-        || tpwsn.isUnsafelyNulltoAnyRef(ptwsn)
-      }
       || viewExists(tp, pt)
 
     /** Test compatibility after normalization.

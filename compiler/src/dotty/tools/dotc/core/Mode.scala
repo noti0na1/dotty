@@ -122,4 +122,7 @@ object Mode {
 
   /** Should we try to convert values ignoring Null type? */
   val UnsafeNullConversion: Mode = newMode(28, "UnsafeNullConversion")
+
+  /** Unsafe Nulls SubType */
+  val UnsafeNullsSubType: Mode = newMode(29, "UnsafeNullsSubType")
 }

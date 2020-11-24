@@ -96,20 +96,20 @@ class S {
     val z8: Array[String | Null] | Null = y2 // error
   }
 
-  def test5[T <: AnyRef] = {
+  def test5[T >: Null <: AnyRef | Null] = {
     given Conversion[T, Array[T]] = _ => ???
 
     val y1: T = ???
     val y2: T | Null = ???
 
     val z1: Array[T] = y1
-    val z2: Array[T | Null] = y1 // error
+    val z2: Array[T | Null] = y1
     val z3: Array[T] | Null = y1
-    val z4: Array[T | Null] | Null = y1 // error
+    val z4: Array[T | Null] | Null = y1
 
-    val z5: Array[T] = y2 // error
-    val z6: Array[T | Null] = y2 // error
-    val z7: Array[T] | Null = y2 // error
-    val z8: Array[T | Null] | Null = y2 // error
+    val z5: Array[T] = y2
+    val z6: Array[T | Null] = y2
+    val z7: Array[T] | Null = y2
+    val z8: Array[T | Null] | Null = y2
   }
 }

@@ -133,9 +133,8 @@ object Implicits:
             else if (mt.paramInfos.lengthCompare(1) == 0 && {
                   var formal = widenSingleton(mt.paramInfos.head)
                   if (approx) formal = wildApprox(formal)
-                  explore((argType relaxed_<:< formal.widenExpr) ||
-                    Nullables.convertUnsafeNulls &&
-                      argType.isUnsafeSubtype(formal.widenExpr, true))
+                  Nullables.useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+                    explore(argType relaxed_<:< formal.widenExpr))
                 })
               Candidate.Conversion
             else
@@ -1336,7 +1335,8 @@ trait Implicits:
 
     /** All available implicits, without ranking */
     def allImplicits: Set[TermRef] = {
-      val contextuals = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion)).map(tryImplicit(_, contextual = true))
+      val contextuals = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion))
+        .map(tryImplicit(_, contextual = true))
       val inscope = implicitScope(wildProto).eligible.map(tryImplicit(_, contextual = false))
       (contextuals.toSet ++ inscope).collect {
         case success: SearchSuccess => success.ref

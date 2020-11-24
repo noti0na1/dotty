@@ -20,11 +20,9 @@ import ast.Trees.mods
 object Nullables:
   import ast.tpd._
 
-  /** Should we try to convert values ignoring Null type at this moment? */
-  def convertUnsafeNulls(using Context): Boolean =
-    ctx.explicitNulls && (
-      config.Feature.enabled(nme.unsafeNulls) ||
-      ctx.mode.is(Mode.UnsafeNullConversion))
+  inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T = 
+    val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
+    op(using c)
 
   /** A set of val or var references that are known to be not null, plus a set of
    *  variable references that are not known (anymore) to be not null

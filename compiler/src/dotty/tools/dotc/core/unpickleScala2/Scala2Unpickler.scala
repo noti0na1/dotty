@@ -782,7 +782,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         val lo = readTypeRef()
         val hi0 = readTypeRef()
         val hi =
-          if ctx.explicitNulls && lo.isNullType && hi0.isNullableAfterErasure
+          if ctx.explicitNulls && lo.isBottomTypeAfterErasure && hi0.isNullableAfterErasure
           then OrNull(hi0) else hi0
         TypeBounds(lo, hi)
       case REFINEDtpe =>
@@ -1264,7 +1264,7 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         val lo = readTreeRef()
         val hi0 = readTreeRef()
         val hi =
-          if ctx.explicitNulls && lo.tpe.isNullType && hi0.tpe.isNullableAfterErasure
+          if ctx.explicitNulls && lo.tpe.isBottomTypeAfterErasure && hi0.tpe.isNullableAfterErasure
           then TypeTree(OrNull(hi0.tpe)) else hi0
         TypeBoundsTree(lo, hi)
 
