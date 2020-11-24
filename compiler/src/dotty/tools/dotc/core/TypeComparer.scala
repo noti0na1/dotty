@@ -764,10 +764,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             isSubType(hi1, tp2, approx.addLow) || compareGADT || tryLiftedToThis1
           case _ =>
             def isNullable(tp: Type): Boolean = tp.widenDealias match {
-              case tp: TypeRef => 
+              case tp: TypeRef =>
                 if ctx.mode.is(Mode.UnsafeNullsSubType) then
                   tp.symbol.isNullableClassAfterErasure
-                else 
+                else
                   tp.symbol.isNullableClass
               case tp: RefinedOrRecType => isNullable(tp.parent)
               case tp: AppliedType => isNullable(tp.tycon)

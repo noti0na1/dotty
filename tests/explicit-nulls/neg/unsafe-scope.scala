@@ -5,16 +5,19 @@ class S {
     val s: String | Null = ???
 
     val x: String = s // error
-    val xs: Array[String | Null] = s // error
+    val xl = s.length // error
+    val xs: Array[String | Null] | Null = s // error
 
     {
       import scala.language.unsafeNulls
       // ensure the previous search cache is not used here
       val y: String = s
-      val ys: Array[String | Null] = s
+      val yl = s.length
+      val ys: Array[String | Null] | Null = s
     }
 
     val z: String = s // error
-    val zs: Array[String | Null] = s // error
+    val zl = s.length // error
+    val zs: Array[String | Null] | Null = s // error
   }
 }

@@ -20,6 +20,7 @@ import Denotations._
 import Periods._
 import CheckRealizable._
 import Variances.{Variance, varianceFromInt, varianceToInt, setStructuralVariances, Invariant}
+import typer.Nullables
 import util.Stats._
 import util.SimpleIdentitySet
 import ast.tpd._
@@ -30,6 +31,7 @@ import Hashable._
 import Uniques._
 import collection.mutable
 import config.Config
+import config.Feature
 import annotation.{tailrec, constructorOnly}
 import language.implicitConversions
 import scala.util.hashing.{ MurmurHash3 => hashing }
@@ -805,7 +807,7 @@ object Types {
         go(l).meet(go(r), pre, safeIntersection = ctx.base.pendingMemberSearches.contains(name))
 
       def goOr(tp: OrType) = tp match {
-        case OrNull(tp1) if config.Feature.enabled(nme.unsafeNulls) =>
+        case OrNull(tp1) if Feature.unsafeNullsEnabled =>
           // Selecting `name` from a type `T | Null` is like selecting `name` from `T`, if
           // unsafeNulls is enabled. This can throw at runtime, but we trade soundness for usability.
           tp1.findMember(name, pre.stripNull, required, excluded)
@@ -1054,12 +1056,8 @@ object Types {
      */
     def matches(that: Type)(using Context): Boolean = {
       record("matches")
-      TypeComparer.matchesType(this, that, relaxed = !ctx.phase.erasedTypes) ||
-      (ctx.explicitNulls &&
-        // TODO: optimize, for example, add a parameter to ignore Null type?
-        TypeComparer.matchesType(
-          this.stripAllNulls, that.stripAllNulls,
-          relaxed = !ctx.phase.erasedTypes))
+      Nullables.useUnsafeNullsSubTypeIf(ctx.explicitNulls)(
+        TypeComparer.matchesType(this, that, relaxed = !ctx.phase.erasedTypes))
     }
 
     /** This is the same as `matches` except that it also matches => T with T and
