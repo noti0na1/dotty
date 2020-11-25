@@ -1,5 +1,5 @@
 val s1: String = ???
-val s2: String  | Null = ???
+val s2: String | Null = ???
 
 def f = {
   s1 eq s2 // error

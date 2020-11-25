@@ -3562,7 +3562,7 @@ class Typer extends Namer
         }
       }
 
-      val treeTpe = tree.tpe
+      val treeTpe = tree.typeOpt
 
       def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
         if pt.isValueType
@@ -3587,14 +3587,15 @@ class Typer extends Namer
         else ctx
 
       inContext(searchCtx) {
-        if ctx.mode.is(Mode.ImplicitsEnabled) && tree.typeOpt.isValueType then
-          if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
-            // We want to allow `null` to `AnyRef` if UnsafeNullConversion is enabled
-            if !(useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
-              treeTpe <:< pt)) then
-              report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
+        if ctx.mode.is(Mode.ImplicitsEnabled) && treeTpe.isValueType then
+          if ctx.mode.is(Mode.UnsafeNullConversion)
+            && pt.isValueType
+            && (treeTpe.isNullableAfterErasure && pt.isRef(defn.ObjectClass)
+              || treeTpe.isNullType && pt.isNullableAfterErasure) then
             tree.cast(pt)
           else
+            if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then
+              report.error(em"the result of an implicit conversion must be more specific than $pt", tree.srcPos)
             searchTree(tree)(failure => tryUnsafeNullConver(cannotFind(failure)))
         else tryUnsafeNullConver(recover(NoMatchingImplicits))
       }

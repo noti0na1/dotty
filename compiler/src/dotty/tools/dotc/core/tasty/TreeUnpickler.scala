@@ -24,12 +24,12 @@ import Variances.Invariant
 import TastyUnpickler.NameTable
 import typer.ConstFold
 import typer.Checking.checkNonCyclic
+import typer.Nullables._
 import util.Spans._
 import util.SourceFile
 import ast.{TreeTypeMap, Trees, tpd, untpd}
 import Trees._
 import Decorators._
-import NullOpsDecorator._
 import transform.SymUtils._
 
 import dotty.tools.tasty.{TastyBuffer, TastyReader}
@@ -364,11 +364,8 @@ class TreeUnpickler(reader: TastyReader,
                 if lo.isMatch then MatchAlias(readVariances(lo))
                 else TypeAlias(readVariances(lo))
               else
-                val hi0 = readVariances(readType())
-                val hi =
-                  if ctx.explicitNulls && lo.isBottomTypeAfterErasure && hi0.isNullableAfterErasure
-                  then OrNull(hi0) else hi0
-                TypeBounds(lo, hi)
+                val hi = readVariances(readType())
+                createNullableTypeBounds(lo, hi)
             case ANNOTATEDtype =>
               AnnotatedType(readType(), Annotation(readTerm()))
             case ANDtype =>
@@ -1250,12 +1247,9 @@ class TreeUnpickler(reader: TastyReader,
               MatchTypeTree(bound, scrut, readCases(end))
             case TYPEBOUNDStpt =>
               val lo = readTpt()
-              val hi0 = if currentAddr == end then lo else readTpt()
-              val hi =
-                if ctx.explicitNulls && lo.tpe.isBottomTypeAfterErasure && hi0.tpe.isNullableAfterErasure
-                then TypeTree(OrNull(hi0.tpe)) else hi0
+              val hi = if currentAddr == end then lo else readTpt()
               val alias = if currentAddr == end then EmptyTree else readTpt()
-              TypeBoundsTree(lo, hi, alias)
+              createNullableTypeBoundsTree(lo, hi, alias)
             case HOLE =>
               val idx = readNat()
               val tpe = readType()

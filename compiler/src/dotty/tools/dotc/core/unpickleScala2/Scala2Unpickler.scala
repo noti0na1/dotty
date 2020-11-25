@@ -18,12 +18,12 @@ import printing.Printer
 import io.AbstractFile
 import util.common._
 import typer.Checking.checkNonCyclic
+import typer.Nullables._
 import transform.SymUtils._
 import PickleBuffer._
 import PickleFormat._
 import Decorators._
 import TypeApplications._
-import NullOpsDecorator._
 import classfile.ClassfileParser
 import scala.collection.mutable
 import scala.collection.mutable.ListBuffer
@@ -780,11 +780,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
         else tycon
       case TYPEBOUNDStpe =>
         val lo = readTypeRef()
-        val hi0 = readTypeRef()
-        val hi =
-          if ctx.explicitNulls && lo.isBottomTypeAfterErasure && hi0.isNullableAfterErasure
-          then OrNull(hi0) else hi0
-        TypeBounds(lo, hi)
+        val hi = readTypeRef()
+        createNullableTypeBounds(lo, hi)
       case REFINEDtpe =>
         val clazz = readSymbolRef().asClass
         val decls = symScope(clazz)
@@ -1262,11 +1259,8 @@ class Scala2Unpickler(bytes: Array[Byte], classRoot: ClassDenotation, moduleClas
 
       case TYPEBOUNDStree =>
         val lo = readTreeRef()
-        val hi0 = readTreeRef()
-        val hi =
-          if ctx.explicitNulls && lo.tpe.isBottomTypeAfterErasure && hi0.tpe.isNullableAfterErasure
-          then TypeTree(OrNull(hi0.tpe)) else hi0
-        TypeBoundsTree(lo, hi)
+        val hi = readTreeRef()
+        createNullableTypeBoundsTree(lo, hi)
 
       case EXISTENTIALTYPEtree =>
         val tpt = readTreeRef()

@@ -20,7 +20,28 @@ import ast.Trees.mods
 object Nullables:
   import ast.tpd._
 
-  inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T = 
+  private def needNullifyHi(lo: Type, hi: Type)(using Context): Boolean =
+    ctx.explicitNulls
+    && lo.isBottomTypeAfterErasure
+    && !hi.isAny
+    && !hi.isBottomTypeAfterErasure
+    && hi.isValueType
+    && hi.isNullableAfterErasure
+
+  def createNullableTypeBounds(lo: Type, hi: Type)(using Context): TypeBounds =
+    TypeBounds(lo,
+      if needNullifyHi(lo, hi)
+      then OrNull(hi)
+      else hi)
+
+  def createNullableTypeBoundsTree(lo: Tree, hi: Tree, alias: Tree = EmptyTree)(using Context): TypeBoundsTree =
+    val hiTpe = hi.typeOpt
+    TypeBoundsTree(lo,
+      if needNullifyHi(lo.typeOpt, hiTpe)
+      then TypeTree(OrNull(hiTpe))
+      else hi, alias)
+
+  inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T =
     val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
     op(using c)
 
