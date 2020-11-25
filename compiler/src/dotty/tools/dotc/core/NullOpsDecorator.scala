@@ -66,24 +66,10 @@ object NullOpsDecorator {
       case tp: TypeProxy => tp.underlying.isNullableAfterErasure
       case OrType(lhs, rhs) =>
         lhs.isNullableAfterErasure || rhs.isNullableAfterErasure
+      case AndType(lhs, rhs) =>
+        lhs.isNullableAfterErasure && rhs.isNullableAfterErasure
       case _ =>
         self.isNullType || self <:< defn.ObjectType
     }
-
-    // def isUnsafelyNulltoAnyRef(pt: Type)(using Context): Boolean =
-    //   self.isNullType && pt.isNullableAfterErasure
-
-    // def isUnsafeSubtype(pt: Type, relaxedSubtype: Boolean = false)(using Context): Boolean =
-    //   val selfs = self.stripAllNulls
-    //   val pts = pt.stripAllNulls
-    //   if relaxedSubtype then
-    //     selfs relaxed_<:< pts
-    //   else
-    //     selfs <:< pts
-
-    // /** Can we convert a tree with type `self` to type `pt` unsafely.
-    //  */
-    // def unsafeNullsSubType(pt: Type, relaxed: Boolean = false)(using Context): Boolean =
-    //   self.isUnsafelyNulltoAnyRef(pt) || self.isUnsafeSubtype(pt, relaxed)
   }
 }
