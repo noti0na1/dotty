@@ -256,7 +256,7 @@ object Types {
     /** True if this type is an instance of the given `cls` or an instance of
      *  a non-bottom subclass of `cls`.
      */
-    final def derivesFrom(cls: Symbol)(using Context): Boolean = {
+    final def derivesFrom(cls: Symbol, afterErasure: Boolean = false)(using Context): Boolean = {
       def loop(tp: Type): Boolean = tp match {
         case tp: TypeRef =>
           val sym = tp.symbol
@@ -274,7 +274,7 @@ object Types {
           // and `T` derivesFrom the class, then the OrType derivesFrom the class.
           // Otherwise, we need to check both sides derivesFrom the class.
           def isLowerBottomType(tp: Type) =
-            tp.isBottomType
+            (if afterErasure then t.isBottomTypeAfterErasure else t.isBottomType)
             && (tp.hasClassSymbol(defn.NothingClass)
                 || cls != defn.NothingClass && !cls.isValueClass)
           if isLowerBottomType(tp.tp1) then
@@ -1035,7 +1035,7 @@ object Types {
       || matchLoosely && {
            val this1 = widenNullary(this)
            val that1 = widenNullary(that)
-           ((this1 `ne` this) || (that1 `ne` that)) 
+           ((this1 `ne` this) || (that1 `ne` that))
            && this1.overrides(that1, false, checkClassInfo, relaxedNulls)
          }
     }

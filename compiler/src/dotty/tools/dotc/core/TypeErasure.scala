@@ -247,15 +247,15 @@ object TypeErasure {
   def isUnboundedGeneric(tp: Type)(using Context): Boolean = tp.dealias match {
     case tp: TypeRef if !tp.symbol.isOpaqueAlias =>
       !tp.symbol.isClass &&
-      !classify(tp).derivesFrom(defn.ObjectClass) &&
+      !classify(tp).derivesFrom(defn.ObjectClass, afterErasure = true) &&
       !tp.symbol.is(JavaDefined)
     case tp: TypeParamRef =>
-      !classify(tp).derivesFrom(defn.ObjectClass) &&
+      !classify(tp).derivesFrom(defn.ObjectClass, afterErasure = true) &&
       !tp.binder.resultType.isJavaMethod
     case tp: TypeAlias => isUnboundedGeneric(tp.alias)
     case tp: TypeBounds =>
       val upper = classify(tp.hi)
-      !upper.derivesFrom(defn.ObjectClass) &&
+      !upper.derivesFrom(defn.ObjectClass, afterErasure = true) &&
       !upper.isPrimitiveValueType
     case tp: TypeProxy => isUnboundedGeneric(tp.translucentSuperType)
     case tp: AndType => isUnboundedGeneric(tp.tp1) && isUnboundedGeneric(tp.tp2)
@@ -292,8 +292,8 @@ object TypeErasure {
     // We need to short-circuit this case here because the regular lub logic below
     // relies on the class hierarchy, which doesn't properly capture `Null`s subtyping
     // behaviour.
-    if (tp1.isBottomTypeAfterErasure && tp2.derivesFrom(defn.ObjectClass)) return tp2
-    if (tp2.isBottomTypeAfterErasure && tp1.derivesFrom(defn.ObjectClass)) return tp1
+    if (tp1.isBottomTypeAfterErasure && tp2.derivesFrom(defn.ObjectClass, afterErasure = true)) return tp2
+    if (tp2.isBottomTypeAfterErasure && tp1.derivesFrom(defn.ObjectClass, afterErasure = true)) return tp1
     tp1 match {
       case JavaArrayType(elem1) =>
         import dotty.tools.dotc.transform.TypeUtils._
@@ -516,8 +516,7 @@ class TypeErasure(isJava: Boolean, semiEraseVCs: Boolean, isConstructor: Boolean
   }
 
   private def eraseArray(tp: Type)(using Context) = {
-    val defn.ArrayOf(elemtp0) = tp
-    val elemtp = if ctx.explicitNulls then elemtp0.stripNull else elemtp0
+    val defn.ArrayOf(elemtp) = tp
     if classify(elemtp).derivesFrom(defn.NullClass) then JavaArrayType(defn.ObjectType)
     else if isUnboundedGeneric(elemtp) && !isJava then defn.ObjectType
     else JavaArrayType(erasureFn(isJava, semiEraseVCs = false, isConstructor, wildcardOK)(elemtp))
