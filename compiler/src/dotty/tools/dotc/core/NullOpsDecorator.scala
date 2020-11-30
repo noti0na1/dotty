@@ -61,15 +61,19 @@ object NullOpsDecorator {
     /** Can the type has null value after erasure?
      *  TODO
      */
-    def isNullableAfterErasure(using Context): Boolean =  self match {
-      case tp: ClassInfo => tp.cls.isNullableClassAfterErasure
-      case tp: TypeProxy => tp.underlying.isNullableAfterErasure
-      case OrType(lhs, rhs) =>
-        lhs.isNullableAfterErasure || rhs.isNullableAfterErasure
-      case AndType(lhs, rhs) =>
-        lhs.isNullableAfterErasure && rhs.isNullableAfterErasure
-      case _ =>
-        self.isNullType || self <:< defn.ObjectType
-    }
+    // def isNullableAfterErasure(using Context): Boolean =  self match {
+    //   case tp: ClassInfo => tp.cls.isNullableClassAfterErasure
+    //   case tp: TypeProxy => tp.underlying.isNullableAfterErasure
+    //   case OrType(lhs, rhs) =>
+    //     lhs.isNullableAfterErasure || rhs.isNullableAfterErasure
+    //   case AndType(lhs, rhs) =>
+    //     lhs.isNullableAfterErasure && rhs.isNullableAfterErasure
+    //   case _ =>
+    //     self.isNullType || self <:< defn.ObjectType
+    // }
+    def isNullableAfterErasure(using Context): Boolean =
+      self.isNullType
+      || !self.isNothingType
+        && self.derivesFrom(defn.ObjectClass, afterErasure = true)
   }
 }

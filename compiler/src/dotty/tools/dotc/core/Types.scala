@@ -1591,6 +1591,9 @@ object Types {
     /** Is this (an alias of) the `scala.Null` type? */
     final def isNullType(using Context) = isRef(defn.NullClass)
 
+    /** Is this (an alias of) the `scala.Nothing` type? */
+    final def isNothingType(using Context) = isRef(defn.NothingClass)
+
     /** The resultType of a LambdaType, or ExprType, the type itself for others */
     def resultType(using Context): Type = this
 

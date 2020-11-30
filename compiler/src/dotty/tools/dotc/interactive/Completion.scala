@@ -10,6 +10,7 @@ import dotty.tools.dotc.core.CheckRealizable
 import dotty.tools.dotc.core.Decorators._
 import dotty.tools.dotc.core.Denotations.SingleDenotation
 import dotty.tools.dotc.core.Flags._
+import dotty.tools.dotc.core.{Mode => CMode}
 import dotty.tools.dotc.core.Names.{Name, TermName}
 import dotty.tools.dotc.core.NameKinds.SimpleNameKind
 import dotty.tools.dotc.core.NameOps._
@@ -252,7 +253,7 @@ object Completion {
         }
 
       // 2. The extension method is a member of some given instance that is visible at the point of the reference.
-      val givensInScope = ctx.implicits.eligible(defn.AnyType).map(_.implicitRef.underlyingRef)
+      val givensInScope = ctx.implicits.eligible(defn.AnyType, ctx.mode.is(CMode.UnsafeNullConversion)).map(_.implicitRef.underlyingRef)
       val extMethodsFromGivensInScope = extractDefinedExtensionMethods(givensInScope)
 
       // 3. The reference is of the form r.m and the extension method is defined in the implicit scope of the type of r.
