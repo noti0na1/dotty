@@ -14,6 +14,7 @@ import collection.{immutable, mutable}
 import util.{Property, SourceFile, NoSource}
 import NameKinds.{TempResultName, OuterSelectName}
 import typer.ConstFold
+import typer.Nullables
 
 import scala.annotation.tailrec
 import scala.io.Codec
@@ -935,7 +936,10 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
     /** The current tree applied to given type argument list: `tree[targs(0), ..., targs(targs.length - 1)]` */
     def appliedToTypeTrees(targs: List[Tree])(using Context): Tree =
-      if (targs.isEmpty) tree else TypeApply(tree, targs)
+      if targs.isEmpty then tree else
+        val app = TypeApply(tree, targs)
+        app.putAttachment(Nullables.UnsafeNullsKey, config.Feature.unsafeNullsEnabled)
+        app
 
     /** Apply to `()` unless tree's widened type is parameterless */
     def ensureApplied(using Context): Tree =

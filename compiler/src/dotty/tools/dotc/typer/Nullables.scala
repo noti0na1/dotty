@@ -22,28 +22,23 @@ object Nullables:
 
   private def needNullifyHi(lo: Type, hi: Type)(using Context): Boolean =
     ctx.explicitNulls
-    && lo.isBottomTypeAfterErasure
-    && !hi.isAny
-    && !hi.isBottomTypeAfterErasure
+    && lo.isExactlyNull
     && hi.isValueType
-    && hi.isNullableAfterErasure
 
   def createNullableTypeBounds(lo: Type, hi: Type)(using Context): TypeBounds =
-    TypeBounds(lo,
-      if needNullifyHi(lo, hi)
-      then OrNull(hi)
-      else hi)
+    val newHi = if needNullifyHi(lo, hi) then OrType(hi, defn.NullType, soft = false) else hi
+    TypeBounds(lo, newHi)
 
   def createNullableTypeBoundsTree(lo: Tree, hi: Tree, alias: Tree = EmptyTree)(using Context): TypeBoundsTree =
     val hiTpe = hi.typeOpt
-    TypeBoundsTree(lo,
-      if needNullifyHi(lo.typeOpt, hiTpe)
-      then TypeTree(OrNull(hiTpe))
-      else hi, alias)
+    val newHi = if needNullifyHi(lo.typeOpt, hiTpe) then TypeTree(OrType(hiTpe, defn.NullType, soft = false)) else hi
+    TypeBoundsTree(lo, newHi, alias)
 
   inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T =
     val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
     op(using c)
+
+  val UnsafeNullsKey = Property.StickyKey[Boolean]
 
   /** A set of val or var references that are known to be not null, plus a set of
    *  variable references that are not known (anymore) to be not null

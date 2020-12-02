@@ -218,6 +218,13 @@ object Types {
       case tp: TypeRef => defn.topClasses.contains(tp.symbol)
       case _ => false
 
+    /** Is this type exactly Null (no vars, aliases, refinements etc allowed)? */
+    def isExactlyNull(using Context): Boolean = this match {
+      case tp: TypeRef =>
+        tp.name == tpnme.Null && (tp.symbol eq defn.NullClass)
+      case _ => false
+    }
+
     /** Is this type exactly Nothing (no vars, aliases, refinements etc allowed)? */
     def isExactlyNothing(using Context): Boolean = this match {
       case tp: TypeRef =>

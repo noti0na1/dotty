@@ -1833,7 +1833,9 @@ class Typer extends Namer
                 checkedArgs = List(TypeTree(elemtp).withSpan(arg.span))
             case _ =>
           }
-      assignType(cpy.AppliedTypeTree(tree)(tpt1, checkedArgs), tpt1, checkedArgs)
+      val appTpTree =assignType(cpy.AppliedTypeTree(tree)(tpt1, checkedArgs), tpt1, checkedArgs)
+      appTpTree.putAttachment(Nullables.UnsafeNullsKey, config.Feature.unsafeNullsEnabled)
+      appTpTree
     }
   }
 
