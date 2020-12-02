@@ -280,11 +280,18 @@ object Implicits:
       buf.toList
     }
 
+    @threadUnsafe lazy val eligibleCache: List[Candidate] = filterMatching(tp)
+
+    @threadUnsafe lazy val eligibleCacheUnsafeNulls: List[Candidate] =
+      inContext(ctx.addMode(Mode.UnsafeNullConversion)) {
+          filterMatching(tp)
+      }
+
     /** The candidates that are eligible for expected type `tp` */
-    @threadUnsafe lazy val eligible: List[Candidate] =
+    def eligible(enableUnsafeNulls: Boolean): List[Candidate] =
       trace(i"eligible($tp), companions = ${companionRefs.showAsList}%, %", implicitsDetailed, show = true) {
         if (refs.nonEmpty && monitored) record(s"check eligible refs in tpe", refs.length)
-        filterMatching(tp)
+        if enableUnsafeNulls then eligibleCacheUnsafeNulls else eligibleCache
       }
 
     override def isAccessible(ref: TermRef)(using Context): Boolean =
@@ -1294,7 +1301,7 @@ trait Implicits:
     private def searchImplicit(contextual: Boolean): SearchResult =
       val eligible =
         if contextual then ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion))
-        else implicitScope(wildProto).eligible
+        else implicitScope(wildProto).eligible(ctx.mode.is(Mode.UnsafeNullConversion))
       searchImplicit(eligible, contextual) match
         case result: SearchSuccess =>
           result
@@ -1337,7 +1344,8 @@ trait Implicits:
     def allImplicits: Set[TermRef] = {
       val contextuals = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion))
         .map(tryImplicit(_, contextual = true))
-      val inscope = implicitScope(wildProto).eligible.map(tryImplicit(_, contextual = false))
+      val inscope = implicitScope(wildProto).eligible(ctx.mode.is(Mode.UnsafeNullConversion))
+        .map(tryImplicit(_, contextual = false))
       (contextuals.toSet ++ inscope).collect {
         case success: SearchSuccess => success.ref
       }

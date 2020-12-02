@@ -159,7 +159,7 @@ trait ImportSuggestions:
       val wildProto = wildApprox(pt)
       val contextualCandidates = ctx.implicits.eligible(wildProto, ctx.mode.is(Mode.UnsafeNullConversion))
       val implicitScopeCandidates = ctx.run.implicitScope(wildProto).eligible
-      val allCandidates = contextualCandidates ++ implicitScopeCandidates
+      val allCandidates = contextualCandidates ++ implicitScopeCandidates(ctx.mode.is(Mode.UnsafeNullConversion))
       allCandidates.map(_.implicitRef.underlyingRef.symbol).toSet
     }
 
