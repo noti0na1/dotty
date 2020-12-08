@@ -74,6 +74,6 @@ object NullOpsDecorator {
     def isNullableAfterErasure(using Context): Boolean =
       self.isNullType
       || !self.isNothingType
-        && self.derivesFrom(defn.ObjectClass, afterErasure = true)
+        && self.derivesFrom(defn.ObjectClass, isErased = true)
   }
 }

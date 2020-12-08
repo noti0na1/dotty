@@ -65,4 +65,9 @@ class S {
     n1(Array("a", null))
     n2(Array("a", null))
   }
+
+  locally {
+    val os: Option[String] = None
+    val s: String = os.orNull // error
+  }
 }

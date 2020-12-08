@@ -247,15 +247,15 @@ object TypeErasure {
   def isUnboundedGeneric(tp: Type)(using Context): Boolean = tp.dealias match {
     case tp: TypeRef if !tp.symbol.isOpaqueAlias =>
       !tp.symbol.isClass &&
-      !classify(tp).derivesFrom(defn.ObjectClass, afterErasure = true) &&
+      !classify(tp).derivesFrom(defn.ObjectClass, isErased = true) &&
       !tp.symbol.is(JavaDefined)
     case tp: TypeParamRef =>
-      !classify(tp).derivesFrom(defn.ObjectClass, afterErasure = true) &&
+      !classify(tp).derivesFrom(defn.ObjectClass, isErased = true) &&
       !tp.binder.resultType.isJavaMethod
     case tp: TypeAlias => isUnboundedGeneric(tp.alias)
     case tp: TypeBounds =>
       val upper = classify(tp.hi)
-      !upper.derivesFrom(defn.ObjectClass, afterErasure = true) &&
+      !upper.derivesFrom(defn.ObjectClass, isErased = true) &&
       !upper.isPrimitiveValueType
     case tp: TypeProxy => isUnboundedGeneric(tp.translucentSuperType)
     case tp: AndType => isUnboundedGeneric(tp.tp1) && isUnboundedGeneric(tp.tp2)
@@ -292,8 +292,8 @@ object TypeErasure {
     // We need to short-circuit this case here because the regular lub logic below
     // relies on the class hierarchy, which doesn't properly capture `Null`s subtyping
     // behaviour.
-    if (tp1.isBottomTypeAfterErasure && tp2.derivesFrom(defn.ObjectClass, afterErasure = true)) return tp2
-    if (tp2.isBottomTypeAfterErasure && tp1.derivesFrom(defn.ObjectClass, afterErasure = true)) return tp1
+    if (tp1.isBottomTypeAfterErasure && tp2.derivesFrom(defn.ObjectClass, isErased = true)) return tp2
+    if (tp2.isBottomTypeAfterErasure && tp1.derivesFrom(defn.ObjectClass, isErased = true)) return tp1
     tp1 match {
       case JavaArrayType(elem1) =>
         import dotty.tools.dotc.transform.TypeUtils._
