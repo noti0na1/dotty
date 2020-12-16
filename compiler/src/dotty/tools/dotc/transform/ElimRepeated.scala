@@ -14,6 +14,7 @@ import Decorators._
 import Denotations._, SymDenotations._
 import TypeErasure.erasure
 import DenotTransformers._
+import NullOpsDecorator._
 
 object ElimRepeated {
   val name: String = "elimRepeated"
@@ -154,7 +155,8 @@ class ElimRepeated extends MiniPhase with InfoTransformer { thisPhase =>
     case SeqLiteral(elems, elemtpt) =>
       JavaSeqLiteral(elems, elemtpt)
     case _ =>
-      val elemType = tree.tpe.elemType
+      // TODO remove Null from the type first
+      val elemType = tree.tpe.stripNull.elemType
       var elemClass = erasure(elemType).classSymbol
       if defn.NotRuntimeClasses.contains(elemClass) then
         elemClass = defn.ObjectClass
@@ -171,7 +173,8 @@ class ElimRepeated extends MiniPhase with InfoTransformer { thisPhase =>
    *        of generic Java varargs in `elimRepeated`.
    */
   private def adaptToArray(tree: Tree, elemPt: Type)(implicit ctx: Context): Tree =
-    val elemTp = tree.tpe.elemType
+    // TODO remove Null from the type first
+    val elemTp = tree.tpe.stripNull.elemType
     val elemTpMatches = elemTp <:< elemPt
     val treeIsArray = tree.tpe.derivesFrom(defn.ArrayClass)
     if elemTpMatches && treeIsArray then

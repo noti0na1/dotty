@@ -783,11 +783,28 @@ class Typer extends Namer
         // so the expected type is the union `Seq[T] | Array[_ <: T]`.
         val ptArg =
           // FIXME(#8680): Quoted patterns do not support Array repeated arguments
-          if (ctx.mode.is(Mode.QuotedPattern)) pt.translateFromRepeated(toArray = false, translateWildcard = true)
-          else pt.translateFromRepeated(toArray = false, translateWildcard = true) |
-               pt.translateFromRepeated(toArray = true,  translateWildcard = true)
-        val expr1 = typedExpr(tree.expr, ptArg)
-        val fromCls = if expr1.tpe.derivesFrom(defn.ArrayClass) then defn.ArrayClass else defn.SeqClass
+          if (ctx.mode.is(Mode.QuotedPattern))
+            if unsafeNullsEnabled then
+              OrNull(pt.translateFromRepeated(toArray = false, translateWildcard = true, withOrNull = true))
+            else
+              pt.translateFromRepeated(toArray = false, translateWildcard = true)
+          else
+            if unsafeNullsEnabled then
+              OrNull(
+                pt.translateFromRepeated(toArray = false, translateWildcard = true, withOrNull = true) |
+                pt.translateFromRepeated(toArray = true,  translateWildcard = true, withOrNull = true))
+            else
+              pt.translateFromRepeated(toArray = false, translateWildcard = true) |
+              pt.translateFromRepeated(toArray = true,  translateWildcard = true)
+        val expr0 = typedExpr(tree.expr, ptArg)
+        val expr1 = if ctx.explicitNulls && (!ctx.mode.is(Mode.Pattern)) then
+            if expr0.tpe.isNullType then
+              expr0.cast(pt.translateParameterized(defn.RepeatedParamClass, defn.ArrayClass))
+            else
+              expr0.castToNonNullable
+          else expr0
+        val fromCls = if expr1.tpe.derivesFrom(defn.ArrayClass, isErased = unsafeNullsEnabled)
+          then defn.ArrayClass else defn.SeqClass
         val tpt1 = TypeTree(expr1.tpe.widen.translateToRepeated(fromCls)).withSpan(tree.tpt.span)
         assignType(cpy.Typed(tree)(expr1, tpt1), tpt1)
       }
@@ -3477,123 +3494,119 @@ class Typer extends Namer
         return tpd.Block(tree1 :: Nil, Literal(Constant(())))
       }
 
-      // convert function literal to SAM closure
-      tree match {
-        case closure(Nil, id @ Ident(nme.ANON_FUN), _)
-        if defn.isFunctionType(wtp) && !defn.isFunctionType(pt) =>
-          // Strip the Null type from the pt before check SAM type
-          val pt1 = if ctx.explicitNulls then pt.stripNull else pt
-          pt1 match {
-            case SAMType(sam)
-            if useUnsafeNullsSubTypeIf(unsafeNullsEnabled)(wtp <:< sam.toFunctionType()) =>
-              // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
-              // but this prevents case blocks from implementing polymorphic partial functions,
-              // since we do not know the result parameter a priori. Have to wait until the
-              // body is typechecked.
-              return toSAM(tree)
-            case _ =>
-          }
-        case _ =>
-      }
-
-      // try GADT approximation, but only if we're trying to select a member
-      // Member lookup cannot take GADTs into account b/c of cache, so we
-      // approximate types based on GADT constraints instead. For an example,
-      // see MemberHealing in gadt-approximation-interaction.scala.
-      pt match {
-        case pt: SelectionProto if ctx.gadt.nonEmpty =>
-          gadts.println(i"Trying to heal member selection by GADT-approximating $wtp")
-          val gadtApprox = Inferencing.approximateGADT(wtp)
-          gadts.println(i"GADT-approximated $wtp ~~ $gadtApprox")
-          if pt.isMatchedBy(gadtApprox) then
-            gadts.println(i"Member selection healed by GADT approximation")
-            return tpd.Typed(tree, TypeTree(gadtApprox))
-        case _ => ;
-      }
-
-      // try an extension method in scope
-      pt match {
-        case selProto @ SelectionProto(selName: TermName, mbrType, _, _) =>
-
-          def tryExtension(using Context): Tree =
-            findRef(selName, WildcardType, ExtensionMethod, EmptyFlags, tree.srcPos) match
-              case ref: TermRef =>
-                extMethodApply(untpd.ref(ref).withSpan(tree.span), tree, mbrType)
-              case _ =>
-                EmptyTree
-
-          try
-            val nestedCtx = ctx.fresh.setNewTyperState()
-            val app = tryExtension(using nestedCtx)
-            if !app.isEmpty && !nestedCtx.reporter.hasErrors then
-              nestedCtx.typerState.commit()
-              return ExtMethodApply(app)
-            else
-              for err <- nestedCtx.reporter.allErrors.take(1) do
-                rememberSearchFailure(tree,
-                  SearchFailure(app.withType(FailedExtension(app, pt, err.msg))))
-          catch case ex: TypeError =>
-            rememberSearchFailure(tree,
-              SearchFailure(tree.withType(NestedFailure(ex.toMessage, pt))))
-        case _ =>
-      }
-
-      // try an Any -> Matchable conversion
-      if pt.isMatchableBound && !wtp.derivesFrom(defn.MatchableClass) then
-        checkMatchable(wtp, tree.srcPos, pattern = false)
-        val target = AndType(tree.tpe.widenExpr, defn.MatchableType)
-        if target <:< pt then
-          return readapt(tree.cast(target))
-
-      // try an implicit conversion
-      val prevConstraint = ctx.typerState.constraint
-      def recover(failure: SearchFailureType) =
-        if (isFullyDefined(wtp, force = ForceDegree.all) &&
-            ctx.typerState.constraint.ne(prevConstraint)) readapt(tree)
-        else err.typeMismatch(tree, pt, failure)
-
-      def searchTree(t: Tree)(fail: SearchFailure => Tree)(using Context) = {
-        inferView(t, pt) match {
-          case SearchSuccess(found: ExtMethodApply, _, _) =>
-            found // nothing to check or adapt for extension method applications
-          case SearchSuccess(found, _, _) =>
-            checkImplicitConversionUseOK(found)
-            withoutMode(Mode.ImplicitsEnabled)(readapt(found))
-          case failure: SearchFailure =>
-            fail(failure)
-        }
-      }
-
-      val treeTpe = tree.typeOpt
-
-      def tryUnsafeNullConver(fail: => Tree)(using Context): Tree =
-        if pt.isValueType
-          && useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
-              treeTpe <:< pt)
-        then tree.cast(pt)
-        else fail
-
-      def cannotFind(failure: SearchFailure) =
-        if (pt.isInstanceOf[ProtoType] && !failure.isAmbiguous) then
-          // don't report the failure but return the tree unchanged. This
-          // will cause a failure at the next level out, which usually gives
-          // a better error message. To compensate, store the encountered failure
-          // as an attachment, so that it can be reported later as an addendum.
-          rememberSearchFailure(tree, failure)
-          tree
-        else recover(failure.reason)
-
-      val searchCtx =
-        if unsafeNullsEnabled then
-          ctx.addMode(Mode.UnsafeNullConversion)
-        else ctx
+      val searchCtx = if unsafeNullsEnabled then ctx.addMode(Mode.UnsafeNullConversion) else ctx
 
       inContext(searchCtx) {
-        if ctx.mode.is(Mode.ImplicitsEnabled) && treeTpe.isValueType then
+        // convert function literal to SAM closure
+        tree match {
+          case closure(Nil, id @ Ident(nme.ANON_FUN), _)
+          if defn.isFunctionType(wtp) && !defn.isFunctionType(pt) =>
+            pt match {
+              case SAMType(sam)
+              if useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+                  wtp <:< sam.toFunctionType()) =>
+                // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
+                // but this prevents case blocks from implementing polymorphic partial functions,
+                // since we do not know the result parameter a priori. Have to wait until the
+                // body is typechecked.
+                return toSAM(tree)
+              case _ =>
+            }
+          case _ =>
+        }
+
+        // try GADT approximation, but only if we're trying to select a member
+        // Member lookup cannot take GADTs into account b/c of cache, so we
+        // approximate types based on GADT constraints instead. For an example,
+        // see MemberHealing in gadt-approximation-interaction.scala.
+        pt match {
+          case pt: SelectionProto if ctx.gadt.nonEmpty =>
+            gadts.println(i"Trying to heal member selection by GADT-approximating $wtp")
+            val gadtApprox = Inferencing.approximateGADT(wtp)
+            gadts.println(i"GADT-approximated $wtp ~~ $gadtApprox")
+            if pt.isMatchedBy(gadtApprox) then
+              gadts.println(i"Member selection healed by GADT approximation")
+              return tpd.Typed(tree, TypeTree(gadtApprox))
+          case _ => ;
+        }
+
+        // try an extension method in scope
+        pt match {
+          case selProto @ SelectionProto(selName: TermName, mbrType, _, _) =>
+
+            def tryExtension(using Context): Tree =
+              findRef(selName, WildcardType, ExtensionMethod, EmptyFlags, tree.srcPos) match
+                case ref: TermRef =>
+                  extMethodApply(untpd.ref(ref).withSpan(tree.span), tree, mbrType)
+                case _ =>
+                  EmptyTree
+
+            try
+              val nestedCtx = ctx.fresh.setNewTyperState()
+              val app = tryExtension(using nestedCtx)
+              if !app.isEmpty && !nestedCtx.reporter.hasErrors then
+                nestedCtx.typerState.commit()
+                return ExtMethodApply(app)
+              else
+                for err <- nestedCtx.reporter.allErrors.take(1) do
+                  rememberSearchFailure(tree,
+                    SearchFailure(app.withType(FailedExtension(app, pt, err.msg))))
+            catch case ex: TypeError =>
+              rememberSearchFailure(tree,
+                SearchFailure(tree.withType(NestedFailure(ex.toMessage, pt))))
+          case _ =>
+        }
+
+        // try an Any -> Matchable conversion
+        if pt.isMatchableBound && !wtp.derivesFrom(defn.MatchableClass) then
+          checkMatchable(wtp, tree.srcPos, pattern = false)
+          val target = AndType(tree.tpe.widenExpr, defn.MatchableType)
+          if target <:< pt then
+            return readapt(tree.cast(target))
+
+        // try an implicit conversion
+        val prevConstraint = ctx.typerState.constraint
+
+        def recover(failure: SearchFailureType) =
+          if (isFullyDefined(wtp, force = ForceDegree.all) &&
+              ctx.typerState.constraint.ne(prevConstraint)) readapt(tree)
+          else err.typeMismatch(tree, pt, failure)
+
+        def searchTree(t: Tree)(fail: SearchFailure => Tree) = {
+          inferView(t, pt) match {
+            case SearchSuccess(found: ExtMethodApply, _, _) =>
+              found // nothing to check or adapt for extension method applications
+            case SearchSuccess(found, _, _) =>
+              checkImplicitConversionUseOK(found)
+              withoutMode(Mode.ImplicitsEnabled)(readapt(found))
+            case failure: SearchFailure =>
+              fail(failure)
+          }
+        }
+
+        def tryUnsafeNullConver(fail: => Tree): Tree =
+          if pt.isValueType
+            && useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+                wtp <:< pt)
+          then tree.cast(pt)
+          else fail
+
+        def cannotFind(failure: SearchFailure) =
+          if (pt.isInstanceOf[ProtoType] && !failure.isAmbiguous) then
+            // don't report the failure but return the tree unchanged. This
+            // will cause a failure at the next level out, which usually gives
+            // a better error message. To compensate, store the encountered failure
+            // as an attachment, so that it can be reported later as an addendum.
+            rememberSearchFailure(tree, failure)
+            tree
+          else recover(failure.reason)
+
+
+        if ctx.mode.is(Mode.ImplicitsEnabled) && wtp.isValueType then
           if ctx.mode.is(Mode.UnsafeNullConversion)
             && pt.isValueType
-            && (treeTpe.isNullableAfterErasure && pt.isRef(defn.ObjectClass)
-              || treeTpe.isNullType && pt.isNullableAfterErasure) then
+            && (wtp.isNullableAfterErasure && pt.isRef(defn.ObjectClass)
+              || wtp.isNullType && pt.isNullableAfterErasure) then
             tree.cast(pt)
           else
             if pt.isRef(defn.AnyValClass) || pt.isRef(defn.ObjectClass) then

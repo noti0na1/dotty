@@ -10,9 +10,11 @@ import Decorators._
 import util.Stats._
 import Names._
 import NameOps._
+import NullOpsDecorator._
 import Flags.Module
 import Variances.variancesConform
 import dotty.tools.dotc.config.Config
+import config.Feature.unsafeNullsEnabled
 
 object TypeApplications {
 
@@ -400,21 +402,26 @@ class TypeApplications(val self: Type) extends AnyVal {
    *  `from` and `to` must be static classes, both with one type parameter, and the same variance.
    *  Do the same for by name types => From[T] and => To[T]
    */
-  def translateParameterized(from: ClassSymbol, to: ClassSymbol, wildcardArg: Boolean = false)(using Context): Type = self match {
+  def translateParameterized(from: ClassSymbol, to: ClassSymbol, wildcardArg: Boolean = false, withOrNull: Boolean = false)(using Context): Type = self match {
     case self @ ExprType(tp) =>
       self.derivedExprType(tp.translateParameterized(from, to))
     case _ =>
-      if (self.derivesFrom(from)) {
+      if (self.derivesFrom(from, isErased = unsafeNullsEnabled || withOrNull)) {
+        def isBottom(t: Type): Boolean =
+          if unsafeNullsEnabled || withOrNull
+          then t.isBottomTypeAfterErasure
+          else t.isBottomType
         def elemType(tp: Type): Type = tp.widenDealias match
           case tp: OrType =>
-            if tp.tp1.isBottomType then elemType(tp.tp2)
-            else if tp.tp2.isBottomType then elemType(tp.tp1)
+            if isBottom(tp.tp1) then elemType(tp.tp2)
+            else if isBottom(tp.tp2) then elemType(tp.tp1)
             else tp.derivedOrType(elemType(tp.tp1), elemType(tp.tp2))
           case tp: AndType => tp.derivedAndType(elemType(tp.tp1), elemType(tp.tp2))
           case _ => tp.baseType(from).argInfos.headOption.getOrElse(defn.NothingType)
         val arg = elemType(self)
-        val arg1 = if (wildcardArg) TypeBounds.upper(arg) else arg
-        to.typeRef.appliedTo(arg1)
+        val arg1 = if withOrNull && arg.isNullableAfterErasure then OrNull(arg) else arg
+        val arg2 = if (wildcardArg) TypeBounds.upper(arg1) else arg1
+        to.typeRef.appliedTo(arg2)
       }
       else self
   }
@@ -425,14 +432,14 @@ class TypeApplications(val self: Type) extends AnyVal {
    *  will be translated to `*<?>`.
    *  Other types are kept as-is.
    */
-  def translateFromRepeated(toArray: Boolean, translateWildcard: Boolean = false)(using Context): Type =
+  def translateFromRepeated(toArray: Boolean, translateWildcard: Boolean = false, withOrNull: Boolean = false)(using Context): Type =
     val seqClass = if (toArray) defn.ArrayClass else defn.SeqClass
     if translateWildcard && self.isInstanceOf[WildcardType] then
       seqClass.typeRef.appliedTo(WildcardType)
     else if self.isRepeatedParam then
       // We want `Array[? <: T]` because arrays aren't covariant until after
       // erasure. See `tests/pos/i5140`.
-      translateParameterized(defn.RepeatedParamClass, seqClass, wildcardArg = toArray)
+      translateParameterized(defn.RepeatedParamClass, seqClass, wildcardArg = toArray, withOrNull = withOrNull)
     else self
 
   /** Translate a `From[T]` into a `*T`. */

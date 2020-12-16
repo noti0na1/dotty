@@ -7,7 +7,8 @@ import Denotations.SingleDenotation
 import Decorators._
 import collection.mutable
 import config.SourceVersion.`3.1`
-import config.Feature.sourceVersion
+import config.Feature.{sourceVersion, unsafeNullsEnabled}
+import typer.Nullables
 
 /** Realizability status */
 object CheckRealizable {
@@ -160,10 +161,14 @@ class CheckRealizable(using Context) {
    */
   private def boundsRealizability(tp: Type) = {
 
+    val unsafeNullsSub = unsafeNullsEnabled
+    def isSub(tp1: Type, tp2: Type): Boolean =
+      Nullables.useUnsafeNullsSubTypeIf(unsafeNullsSub)(tp1 <:< tp2)
+
     val memberProblems = withMode(Mode.CheckBounds) {
       for {
         mbr <- tp.nonClassTypeMembers
-        if !(mbr.info.loBound <:< mbr.info.hiBound)
+        if !isSub(mbr.info.loBound, mbr.info.hiBound)
       }
       yield new HasProblemBounds(mbr.name, mbr.info)
     }
@@ -173,7 +178,7 @@ class CheckRealizable(using Context) {
         name <- refinedNames(tp)
         if (name.isTypeName)
         mbr <- tp.member(name).alternatives
-        if !(mbr.info.loBound <:< mbr.info.hiBound)
+        if !isSub(mbr.info.loBound, mbr.info.hiBound)
       }
       yield
         new HasProblemBounds(name, mbr.info)
@@ -184,7 +189,7 @@ class CheckRealizable(using Context) {
         new HasProblemBase(base1, base2) :: Nil
       case base =>
         base.argInfos.collect {
-          case bounds @ TypeBounds(lo, hi) if !(lo <:< hi) =>
+          case bounds @ TypeBounds(lo, hi) if !isSub(lo, hi) =>
             new HasProblemBaseArg(base, bounds)
         }
     }

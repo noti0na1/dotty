@@ -1,10 +1,12 @@
-package dotty.tools.dotc.core
+package dotty.tools.dotc
+package core
 
-import Contexts.{Context, ctx}
+import ast.Trees._
+import Contexts._
 import Symbols.defn
 import Types._
 
-/** Defines operations on nullable types. */
+/** Defines operations on nullable types and tree. */
 object NullOpsDecorator {
 
   extension (self: Type) {
@@ -75,5 +77,14 @@ object NullOpsDecorator {
       self.isNullType
       || !self.isNothingType
         && self.derivesFrom(defn.ObjectClass, isErased = true)
+  }
+
+  import ast.tpd._
+
+  extension (self: Tree) {
+    def castToNonNullable(using Context): Tree = self.typeOpt match {
+      case OrNull(tp) => self.cast(tp)
+      case _ => self
+    }
   }
 }
