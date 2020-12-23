@@ -54,8 +54,7 @@ class ExpandSAMs extends MiniPhase:
           checkRefinements(tpe, fn)
           tree
         case tpe =>
-          val tpe0 = if ctx.explicitNulls then tpe.stripNull else tpe
-          val tpe1 = checkRefinements(tpe0, fn)
+          val tpe1 = checkRefinements(tpe.stripNull, fn)
           val Seq(samDenot) = tpe1.possibleSamMethods
           cpy.Block(tree)(stats,
               AnonClass(tpe1 :: Nil, fn.symbol.asTerm :: Nil, samDenot.symbol.asTerm.name :: Nil))

@@ -172,11 +172,10 @@ object Types {
       case tp: ExprType => tp.resultType.isStable
       case tp: AnnotatedType => tp.parent.isStable
       case tp: AndType =>
-        // if one side is stable and another side is realizable or a subtype,
-        // then the AndType is stable
-        def checkAndStable(x: Type, y: Type) =
-          x.isStable && ((realizability(y) eq Realizable) || y <:< x.widen)
-        checkAndStable(tp.tp1, tp.tp2) || checkAndStable(tp.tp2, tp.tp1)
+        // TODO: fix And type check when tp contains type parames for explicit-nulls flow-typing
+        // see: tests/explicit-nulls/pos/flow-stable.scala.disabled
+        tp.tp1.isStable && (realizability(tp.tp2) eq Realizable) ||
+        tp.tp2.isStable && (realizability(tp.tp1) eq Realizable)
       case _ => false
     }
 
@@ -1047,6 +1046,7 @@ object Types {
      *  member `sym2` of type `that`? This is the same as `<:<`, except that
      *  @param matchLoosely   if true the types `=> T` and `()T` are seen as overriding each other.
      *  @param checkClassInfo if true we check that ClassInfos are within bounds of abstract types
+     *  @param relaxedNulls   if true the null type is ignored during subtype check.
      */
     final def overrides(that: Type, matchLoosely: => Boolean,
       checkClassInfo: Boolean = true, relaxedNulls: Boolean = false)(using Context): Boolean = {
@@ -3191,10 +3191,8 @@ object Types {
     def apply(tp: Type)(using Context) =
       if tp.isNullType then tp else OrType(tp, defn.NullType, soft = false)
     def unapply(tp: Type)(using Context): Option[Type] =
-      if ctx.explicitNulls then
-        val tp1 = tp.stripNull
-        if tp1 ne tp then Some(tp1) else None
-      else None
+      val tp1 = tp.stripNull
+      if tp1 ne tp then Some(tp1) else None
   }
 
   // ----- ExprType and LambdaTypes -----------------------------------

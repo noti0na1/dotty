@@ -22,22 +22,34 @@ object Nullables:
 
   private def needNullifyHi(lo: Type, hi: Type)(using Context): Boolean =
     ctx.explicitNulls
-    && lo.isExactlyNull
+    && lo.isExactlyNull // only nullify hi if lo is exactly Null type
     && hi.isValueType
+    // We cannot check if hi is nullable, because it can cause cyclic reference.
 
+  /** Create a nullable type bound
+   *  If the lo is `Null`, `| Null` is added to hi
+   */
   def createNullableTypeBounds(lo: Type, hi: Type)(using Context): TypeBounds =
     val newHi = if needNullifyHi(lo, hi) then OrType(hi, defn.NullType, soft = false) else hi
     TypeBounds(lo, newHi)
 
+
+  /** Create a nullable type bound tree
+   *  If the lo is `Null`, `| Null` is added to hi
+   */
   def createNullableTypeBoundsTree(lo: Tree, hi: Tree, alias: Tree = EmptyTree)(using Context): TypeBoundsTree =
     val hiTpe = hi.typeOpt
     val newHi = if needNullifyHi(lo.typeOpt, hiTpe) then TypeTree(OrType(hiTpe, defn.NullType, soft = false)) else hi
     TypeBoundsTree(lo, newHi, alias)
 
+  /** Use unsafe nulls subtyping where `Null` is a subtype of all reference types */
   inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T =
     val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
     op(using c)
 
+  /** A StickyKey for TypeApply and AppliedType in unsafe nulls,
+   *  In PostTyper, a relaxed bound check is used for these types.
+   */
   val UnsafeNullsKey = Property.StickyKey[Boolean]
 
   /** A set of val or var references that are known to be not null, plus a set of

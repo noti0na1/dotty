@@ -155,8 +155,7 @@ class ElimRepeated extends MiniPhase with InfoTransformer { thisPhase =>
     case SeqLiteral(elems, elemtpt) =>
       JavaSeqLiteral(elems, elemtpt)
     case _ =>
-      // TODO remove Null from the type first
-      val elemType = tree.tpe.stripNull.elemType
+      val elemType = tree.tpe.elemType
       var elemClass = erasure(elemType).classSymbol
       if defn.NotRuntimeClasses.contains(elemClass) then
         elemClass = defn.ObjectClass
@@ -173,8 +172,7 @@ class ElimRepeated extends MiniPhase with InfoTransformer { thisPhase =>
    *        of generic Java varargs in `elimRepeated`.
    */
   private def adaptToArray(tree: Tree, elemPt: Type)(implicit ctx: Context): Tree =
-    // TODO remove Null from the type first
-    val elemTp = tree.tpe.stripNull.elemType
+    val elemTp = tree.tpe.elemType
     val elemTpMatches = elemTp <:< elemPt
     val treeIsArray = tree.tpe.derivesFrom(defn.ArrayClass)
     if elemTpMatches && treeIsArray then

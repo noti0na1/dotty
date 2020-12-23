@@ -117,17 +117,6 @@ class CheckRealizable(using Context) {
     case _: SingletonType | NoPrefix =>
       Realizable
     case tp =>
-      // TODO
-      // check the realizability of a special AndType
-      def checkAndType(x: TermRef, y: Type) =
-        (realizability(x) eq Realizable) && (y <:< x.widen)
-      val isRealizableAndType = tp match {
-        case AndType(tr: TermRef, tp1) =>
-          checkAndType(tr, tp1)
-        case AndType(tp1, tr: TermRef) =>
-          checkAndType(tr, tp1)
-        case _ => false
-      }
       def isConcrete(tp: Type): Boolean = tp.dealias match {
         case tp: TypeRef => tp.symbol.isClass
         case tp: TypeProxy => isConcrete(tp.underlying)
@@ -135,8 +124,7 @@ class CheckRealizable(using Context) {
         case tp: OrType  => isConcrete(tp.tp1) && isConcrete(tp.tp2)
         case _ => false
       }
-      if isRealizableAndType then Realizable
-      else if !isConcrete(tp) then NotConcrete
+      if (!isConcrete(tp)) NotConcrete
       else boundsRealizability(tp).andAlso(memberRealizability(tp))
   }
 
@@ -161,6 +149,7 @@ class CheckRealizable(using Context) {
    */
   private def boundsRealizability(tp: Type) = {
 
+    // In unsafe nulls, we use the old subtyping to check the bounds
     val unsafeNullsSub = unsafeNullsEnabled
     def isSub(tp1: Type, tp2: Type): Boolean =
       Nullables.useUnsafeNullsSubTypeIf(unsafeNullsSub)(tp1 <:< tp2)

@@ -15,6 +15,7 @@ object NullOpsDecorator {
      *  If the type is `T1 | ... | Tn`, and `Ti` references to `Null`,
      *  then return `T1 | ... | Ti-1 | Ti+1 | ... | Tn`.
      *  If this type isn't (syntactically) nullable, then returns the type unchanged.
+     *  The type will not be changed if explicit-nulls is not enabled.
      */
     def stripNull(using Context): Type = {
       def strip(tp: Type): Type =
@@ -41,17 +42,7 @@ object NullOpsDecorator {
         }
         if tpStriped ne tpWiden then tpStriped else tp
 
-      strip(self)
-    }
-
-    def stripAllNulls(using Context): Type = {
-      object RemoveNulls extends TypeMap {
-        override def apply(tp: Type): Type =
-          val mapped = mapOver(tp.widenTermRefExpr.stripNull)
-          if tp eq mapped then tp else mapped
-      }
-      val rem = RemoveNulls(self)
-      if rem ne self then rem else self
+      if ctx.explicitNulls then strip(self) else self
     }
 
     /** Is self (after widening and dealiasing) a type of the form `T | Null`? */
@@ -60,19 +51,7 @@ object NullOpsDecorator {
       stripped ne self
     }
 
-    /** Can the type has null value after erasure?
-     *  TODO
-     */
-    // def isNullableAfterErasure(using Context): Boolean =  self match {
-    //   case tp: ClassInfo => tp.cls.isNullableClassAfterErasure
-    //   case tp: TypeProxy => tp.underlying.isNullableAfterErasure
-    //   case OrType(lhs, rhs) =>
-    //     lhs.isNullableAfterErasure || rhs.isNullableAfterErasure
-    //   case AndType(lhs, rhs) =>
-    //     lhs.isNullableAfterErasure && rhs.isNullableAfterErasure
-    //   case _ =>
-    //     self.isNullType || self <:< defn.ObjectType
-    // }
+    /** If a type is nullable after erasure */
     def isNullableAfterErasure(using Context): Boolean =
       self.isNullType
       || !self.isNothingType
@@ -82,6 +61,7 @@ object NullOpsDecorator {
   import ast.tpd._
 
   extension (self: Tree) {
+    // cast the type of the tree to a non-nullable type
     def castToNonNullable(using Context): Tree = self.typeOpt match {
       case OrNull(tp) => self.cast(tp)
       case _ => self
