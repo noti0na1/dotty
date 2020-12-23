@@ -1317,7 +1317,7 @@ class Typer extends Namer
       if (tree.tpt.isEmpty)
         meth1.tpe.widen match {
           case mt: MethodType =>
-            val pt1 = pt.stripNull
+            val pt1 = pt.stripNullWhenExplicit
             pt1 match {
               case SAMType(sam)
               if !defn.isFunctionType(pt1)
@@ -1676,7 +1676,7 @@ class Typer extends Namer
   }
 
   def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(using Context): SeqLiteral = {
-    val elemProto = pt.stripNull.elemType match {
+    val elemProto = pt.stripNullWhenExplicit.elemType match {
       case NoType => WildcardType
       case bounds: TypeBounds => WildcardType(bounds)
       case elemtp => elemtp

@@ -5,7 +5,7 @@ title: "Explicit Nulls"
 
 The explicit nulls feature (enabled via a flag) changes the Scala type hierarchy
 so that reference types (e.g. `String`) are non-nullable. We can still express nullability
-with union types: e.g. `val x: String|Null = null`.
+with union types: e.g. `val x: String | Null = null`.
 
 The implementation of the feature in dotty can be conceptually divided in several parts:
   1. changes to the type hierarchy so that `Null` is only a subtype of `Any`
@@ -27,15 +27,13 @@ We change the type hierarchy so that `Null` is only a subtype of `Any` by:
 
 ## Working with Nullable Unions
 
-There are some utility functions for nullable types in `NullOpsDecorator.scala` . They are extension methods for `Type`; hence we can use them in this way: `tp.f(...)`.
+There are some utility functions for nullable types in `NullOpsDecorator.scala`.
+They are extension methods for `Type`; hence we can use them in this way: `tp.f(...)`.
 
-- `stripNull` syntactically strips all `Null` types in the union:
+- `stripNullWhenExplicit` syntactically strips all `Null` types in the union:
   e.g. `String|Null => String`.
-- `stripAllNullS` collapses all `Null` unions within this type, and not just the outermost
-  ones (as `stripNull` does).
 - `isNullableUnion` determines whether `this` is a nullable union.
 - `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.
-- `isUnsafelyConvertible` determines whether we can convert `this` type to `pt` unsafely if we ignore `Null` type.
 
 Within `Types.scala`, we also defined an extractor `OrNull` to extract the non-nullable part of a nullable unions .
 

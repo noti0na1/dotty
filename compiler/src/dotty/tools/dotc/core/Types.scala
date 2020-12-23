@@ -833,7 +833,7 @@ object Types {
         case OrNull(tp1) if Feature.unsafeNullsEnabled =>
           // Selecting `name` from a type `T | Null` is like selecting `name` from `T`, if
           // unsafeNulls is enabled. This can throw at runtime, but we trade soundness for usability.
-          tp1.findMember(name, pre.stripNull, required, excluded)
+          tp1.findMember(name, pre.stripNullWhenExplicit, required, excluded)
         case _ =>
           // we need to keep the invariant that `pre <: tp`. Branch `union-types-narrow-prefix`
           // achieved that by narrowing `pre` to each alternative, but it led to merge errors in
@@ -3191,7 +3191,7 @@ object Types {
     def apply(tp: Type)(using Context) =
       if tp.isNullType then tp else OrType(tp, defn.NullType, soft = false)
     def unapply(tp: Type)(using Context): Option[Type] =
-      val tp1 = tp.stripNull
+      val tp1 = tp.stripNullWhenExplicit
       if tp1 ne tp then Some(tp1) else None
   }
 

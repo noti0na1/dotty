@@ -56,6 +56,12 @@ So far, we have found the following useful:
 
     Don't use `.nn` on mutable variables directly, because it may introduce an unknown type into the type of the variable.
 
+  - An `unsafeNulls` language feature
+
+    When imported, `T | Null` can be used as `T`, similar to regular Scala (without explicit nulls).
+
+    See UnsafeNulls section for more details.
+
 ## Unsoundness
 
 The new type system is unsound with respect to `null`. This means there are still instances where an expression has a non-nullable type like `String`, but its value is actually `null`.
@@ -424,17 +430,38 @@ We don't support:
 
 ### UnsafeNulls
 
-It is difficult to work with nullable values, we introduce a language feature `unsafeNulls`. Inside this "unsafe" scope, all `T | Null` values can be used as `T`, and `Null` type keeps being a subtype of `Any`.
+It is difficult to work with many nullable values, we introduce a language feature `unsafeNulls`.
+Inside this "unsafe" scope, all `T | Null` values can be used as `T`.
 
-Users can import `scala.language.unsafeNulls` to create such scopes, or use `-language:unsafeNulls` to enable this feature globally. The following unsafe null operations will apply to all nullable types:
-1. select member of `T` on `T | Null` object
-2. call extension methods of `T` on `T | Null`
-3. convert `T1` to `T2` if `T1.stripAllNulls <:< T2.stripAllNulls` or `T1` is `Null` and `T2` has null value after erasure
-4. allow equality check between `T` and `T | Null`
+Users can import `scala.language.unsafeNulls` to create such scopes, or use `-language:unsafeNulls` to enable this feature globally (for migration purpose only).
+
+Assume `T` is a reference type (a subtype of `AnyRef`), the following unsafe operation rules are
+applied in this unsafe-nulls scope:
+1. the members of `T` can be found on `T | Null`
+2. a value with type `T` can be compared with `T | Null` and `Null`
+3. suppose `T1` is not a subtype of `T2` using explicit-nulls subtyping (where `Null` is a direct
+subtype of Any), extension methods and implicit conversions designed for `T2` can be used for
+`T1` if `T1` is a subtype of `T2` using regular subtyping rules (where `Null` is a subtype of every
+reference type)
+4. suppose `T1` is not a subtype of `T2` using explicit-nulls subtyping, a value with type `T1`
+can be used as `T2` if `T1` is a subtype of `T2` using regular subtyping rules
 
 Addtionally, `null` can be used as `AnyRef` (`Object`), which means you can select `.eq` or `.toString` on it.
 
-The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected (for example, some code relies on the fact of `Null <:< AnyRef`). To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
+The program in `unsafeNulls` will have a **similar** semantic as regular Scala, but not **equivalent**.
+
+For example, the following code cannot be compiled even using unsafe nulls. Because of the
+Java interoperation, the type of the get method becomes `T | Null`.
+
+```Scala
+def head[T](xs: java.util.List[T]): T = xs.get(0) // error
+```
+
+Since the compiler doesn’t know whether `T` is a reference type, it is unable to cast `T | Null`
+to `T`. A `.nn` need to be inserted after `xs.get(0)` by user manually to fix the error, which
+strips the `Nul`l from its type.
+
+The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected. To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
 
 ```scala
 def f(x: String): String = ???

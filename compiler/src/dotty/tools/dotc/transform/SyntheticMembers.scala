@@ -211,7 +211,7 @@ class SyntheticMembers(thisPhase: DenotTransformer) {
       def filterStringConstructor(s: Symbol): Boolean = s.info match {
         case m: MethodType if s.isConstructor && m.paramInfos.size == 1 =>
           val head = m.paramInfos.head
-          val pinfo = head.stripNull
+          val pinfo = head.stripNullWhenExplicit
           pinfo == defn.StringType
         case _ => false
       }
