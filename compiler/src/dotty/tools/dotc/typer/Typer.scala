@@ -781,6 +781,7 @@ class Typer extends Namer
         // A sequence argument `xs: _*` can be either a `Seq[T]` or an `Array[_ <: T]`,
         // irrespective of whether the method we're calling is a Java or Scala method,
         // so the expected type is the union `Seq[T] | Array[_ <: T]`.
+        // If unsafe nulls is enabled, the expected type is `Seq[T | Null] | Array[_ <: T | Null] | Null`.
         val ptArg =
           // FIXME(#8680): Quoted patterns do not support Array repeated arguments
           if (ctx.mode.is(Mode.QuotedPattern))
@@ -799,8 +800,10 @@ class Typer extends Namer
         val expr0 = typedExpr(tree.expr, ptArg)
         val expr1 = if ctx.explicitNulls && (!ctx.mode.is(Mode.Pattern)) then
             if expr0.tpe.isNullType then
+              // If the type of the argument is `Null`, we cast it to array directly.
               expr0.cast(pt.translateParameterized(defn.RepeatedParamClass, defn.ArrayClass))
             else
+              // We need to make sure its type is no longer nullable
               expr0.castToNonNullable
           else expr0
         val fromCls = if expr1.tpe.derivesFrom(defn.ArrayClass, isErased = unsafeNullsEnabled)

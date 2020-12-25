@@ -9,7 +9,7 @@ with union types: e.g. `val x: String | Null = null`.
 
 The implementation of the feature in dotty can be conceptually divided in several parts:
   1. changes to the type hierarchy so that `Null` is only a subtype of `Any`
-  2. a "translation layer" for Java interop that exposes the nullability in Java APIs
+  2. a "translation layer" for Java interoperability that exposes the nullability in Java APIs
   3. a `unsafeNulls` language feature which enables implicit unsafe conversion between `T` and `T | Null`
 
 ## Explicit-Nulls Flag
@@ -21,7 +21,7 @@ The explicit-nulls flag is currently disabled by default. It can be enabled via 
 
 We change the type hierarchy so that `Null` is only a subtype of `Any` by:
   - modifying the notion of what is a nullable class (`isNullableClass`) in `SymDenotations`
-    to include _only_ `Null` and `Any`
+    to include _only_ `Null` and `Any`, which is used by `TypeComparer`
   - changing the parent of `Null` in `Definitions` to point to `Any` and not `AnyRef`
   - changing `isBottomType` and `isBottomClass` in `Definitions`
 
@@ -31,7 +31,7 @@ There are some utility functions for nullable types in `NullOpsDecorator.scala`.
 They are extension methods for `Type`; hence we can use them in this way: `tp.f(...)`.
 
 - `stripNullWhenExplicit` syntactically strips all `Null` types in the union:
-  e.g. `String|Null => String`.
+  e.g. `T | Null => T`. This should only be used if we can guarantee `T` is a reference type.
 - `isNullableUnion` determines whether `this` is a nullable union.
 - `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.
 
@@ -43,7 +43,7 @@ Within `Types.scala`, we also defined an extractor `OrNull` to extract the non-n
   case _ => // otherwise
 ```
 
-## Java Interop
+## Java Interoperability
 
 The problem we're trying to solve here is: if we see a Java method `String foo(String)`,
 what should that method look like to Scala?
@@ -78,6 +78,14 @@ If the explicit nulls flag is enabled, the overriding check between Scala classe
 The `matches` function in `Types.scala` is used to select condidated for overriding check.
 
 The `compatibleTypes` in `RefCheck.scala` determines whether the overriding types are compatible.
+
+## Nullified Upper Bound
+
+Suppose we have a type bound `class C[T >: Null <: String]`, it becomes unapplicable in explicit nulls, since
+we don't have a type that is a supertype of `Null` and a subtype of `String`.
+
+Hence, when we read a type bound from Scala 2 Tasty or Scala 3 Tasty, the upper bound is nullified if the lower
+bound is exactly `Null`. The example above would become `class C[T >: Null <: String | Null]`.
 
 ## Unsafe Nulls
 

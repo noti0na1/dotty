@@ -49,6 +49,8 @@ object Nullables:
 
   /** A StickyKey for TypeApply and AppliedType in unsafe nulls,
    *  In PostTyper, a relaxed bound check is used for these types.
+   *  Since we are unable to track `unsafeNulls` after Typer, this
+   *  key is necessary.
    */
   val UnsafeNullsKey = Property.StickyKey[Boolean]
 

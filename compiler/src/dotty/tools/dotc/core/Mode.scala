@@ -123,6 +123,9 @@ object Mode {
   /** Should we try to convert values ignoring Null type? */
   val UnsafeNullConversion: Mode = newMode(28, "UnsafeNullConversion")
 
-  /** Unsafe Nulls SubType */
+  /** Should we use Unsafe Nulls SubTyping in TypeComparer?
+   *  If this mode is in the Context, `Null` is considered as a
+   *  subtype of all reference type.
+   */
   val UnsafeNullsSubType: Mode = newMode(29, "UnsafeNullsSubType")
 }

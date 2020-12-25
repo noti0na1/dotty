@@ -437,12 +437,16 @@ Users can import `scala.language.unsafeNulls` to create such scopes, or use `-la
 
 Assume `T` is a reference type (a subtype of `AnyRef`), the following unsafe operation rules are
 applied in this unsafe-nulls scope:
+
 1. the members of `T` can be found on `T | Null`
+
 2. a value with type `T` can be compared with `T | Null` and `Null`
+
 3. suppose `T1` is not a subtype of `T2` using explicit-nulls subtyping (where `Null` is a direct
 subtype of Any), extension methods and implicit conversions designed for `T2` can be used for
 `T1` if `T1` is a subtype of `T2` using regular subtyping rules (where `Null` is a subtype of every
 reference type)
+
 4. suppose `T1` is not a subtype of `T2` using explicit-nulls subtyping, a value with type `T1`
 can be used as `T2` if `T1` is a subtype of `T2` using regular subtyping rules
 

@@ -939,6 +939,8 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
     def appliedToTypeTrees(targs: List[Tree])(using Context): Tree =
       if targs.isEmpty then tree else
         val app = TypeApply(tree, targs)
+        // If unsafe-nulls is enabled, a key is added to the Tree.
+        // So a relaxed bound check can be used for these types In PostTyper.
         app.putAttachment(Nullables.UnsafeNullsKey, config.Feature.unsafeNullsEnabled)
         app
 
