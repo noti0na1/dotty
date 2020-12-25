@@ -465,10 +465,15 @@ Since the compiler doesn’t know whether `T` is a reference type, it is unable 
 to `T`. A `.nn` need to be inserted after `xs.get(0)` by user manually to fix the error, which
 strips the `Nul`l from its type.
 
-The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls. Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls` to the compile options. A small number of manual modifications are expected. To migrate to full explicit nulls in the future, `-language:unsafeNulls` can be dropped and add `import scala.language.unsafeNulls` only when needed.
+The intention of this `unsafeNulls` is to give users a better migration path for explicit nulls.
+Projects for Scala 2 or regular dotty can try this by adding `-Yexplicit-nulls -language:unsafeNulls`
+to the compile options. A small number of manual modifications are expected. To migrate to the full
+explicit nulls feature in the future, `-language:unsafeNulls` can be dropped and add
+`import scala.language.unsafeNulls` only when needed.
 
 ```scala
 def f(x: String): String = ???
+def nullOf[T >: Null]: T = null
 
 import scala.language.unsafeNulls
 
@@ -485,9 +490,13 @@ val c: String = null // Null to String
 val d1: Array[String] = ???
 val d2: Array[String | Null] = d1 // unsafely convert Array[String] to Array[String | Null]
 val d3: Array[String] = Array(null) // unsafe
+
+class C[T >: Null <: String] // define a type bound with unsafe conflict bound
+
+val n = nullOf[String] // apply a type bound unsafely
 ```
 
-Without the `unsafeNulls`, all these unsafe operations will not be typechecked.
+Without the `unsafeNulls`, all these unsafe operations will not be type-checked.
 
 `unsafeNulls` also works for extension methods and implicit search.
 
