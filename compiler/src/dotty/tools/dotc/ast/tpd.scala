@@ -10,7 +10,7 @@ import core._
 import util.Spans._, Types._, Contexts._, Constants._, Names._, Flags._, NameOps._
 import Symbols._, StdNames._, Annotations._, Trees._, Symbols._
 import Decorators._, DenotTransformers._
-import NullOpsDecorator._
+import Phases._, NullOpsDecorator._
 import collection.{immutable, mutable}
 import util.{Property, SourceFile, NoSource}
 import NameKinds.{TempResultName, OuterSelectName}
@@ -473,7 +473,7 @@ object tpd extends Trees.Instance[Type] with TypedTreeInfo {
 
   /** The wrapped array method name for an array of type elemtp */
   def wrapArrayMethodName(elemtp: Type)(using Context): TermName = {
-    val elemCls = elemtp.classSymbolAfterErasure
+    val elemCls = atPhase(erasurePhase.next) { elemtp.classSymbol }
     if (elemCls.isPrimitiveValueClass) nme.wrapXArray(elemCls.name)
     else if (elemCls.derivesFrom(defn.ObjectClass) && !elemCls.isNotRuntimeClass) nme.wrapRefArray
     else nme.genericWrapArray

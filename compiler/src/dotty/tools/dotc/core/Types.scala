@@ -466,10 +466,7 @@ object Types {
      *  instance, or NoSymbol if none exists (either because this type is not a
      *  value type, or because superclasses are ambiguous).
      */
-    final def classSymbol(using Context): Symbol = classSymbolWith(false)
-    final def classSymbolAfterErasure(using Context): Symbol = classSymbolWith(true)
-
-    final private def classSymbolWith(isErased: Boolean)(using Context): Symbol = {
+    final def classSymbol(using Context): Symbol = {
       def loop(tp:Type): Symbol = tp match {
         case tp: TypeRef =>
           val sym = tp.symbol
@@ -492,7 +489,7 @@ object Types {
           else
             val tp1Null = tp.tp1.hasClassSymbol(defn.NullClass)
             val tp2Null = tp.tp2.hasClassSymbol(defn.NullClass)
-            if isErased && (tp1Null || tp2Null) then
+            if ctx.erasedTypes && (tp1Null || tp2Null) then
               val otherSide = if tp1Null then loop(tp.tp2) else loop(tp.tp1)
               if otherSide.isValueClass then defn.AnyClass else otherSide
             else
