@@ -306,7 +306,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           args.foreach(checkInferredWellFormed)
           if (fn.symbol != defn.ChildAnnot.primaryConstructor)
             // Make an exception for ChildAnnot, which should really have AnyKind bounds
-            val checkCtx = if tree.attachmentOrElse(Nullables.UnsafeNullsKey, false) then
+            val checkCtx = if tree.hasAttachment(Nullables.UnsafeNullsKey) then
               ctx.addMode(Mode.UnsafeNullsSubType)
             else
               ctx
@@ -370,7 +370,7 @@ class PostTyper extends MacroTransform with IdentityDenotTransformer { thisPhase
           else if (tree.tpt.symbol == defn.orType)
             () // nothing to do
           else
-            val checkCtx = if tree.attachmentOrElse(Nullables.UnsafeNullsKey, false) then
+            val checkCtx = if tree.hasAttachment(Nullables.UnsafeNullsKey) then
               ctx.addMode(Mode.UnsafeNullsSubType)
             else
               ctx

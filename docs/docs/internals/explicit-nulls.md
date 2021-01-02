@@ -30,7 +30,7 @@ We change the type hierarchy so that `Null` is only a subtype of `Any` by:
 There are some utility functions for nullable types in `NullOpsDecorator.scala`.
 They are extension methods for `Type`; hence we can use them in this way: `tp.f(...)`.
 
-- `stripNullWhenExplicit` syntactically strips all `Null` types in the union:
+- `stripNull` syntactically strips all `Null` types in the union:
   e.g. `T | Null => T`. This should only be used if we can guarantee `T` is a reference type.
 - `isNullableUnion` determines whether `this` is a nullable union.
 - `isNullableAfterErasure` determines whether `this` type can have `null` value after erasure.

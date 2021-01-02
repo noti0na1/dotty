@@ -10,7 +10,7 @@ import Trees._
 import Constants._
 import util.{Stats, SimpleIdentityMap}
 import Decorators._
-import Nullables.useUnsafeNullsSubTypeIf
+import Nullables.withUnsafeNulls
 import NullOpsDecorator._
 import Uniques._
 import config.Feature
@@ -41,7 +41,7 @@ object ProtoTypes {
     def isCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      useUnsafeNullsSubTypeIf(
+      withUnsafeNulls(
         Feature.unsafeNullsEnabled
         || ctx.mode.is(Mode.UnsafeNullConversion))(
           tpw relaxed_<:< ptw)
@@ -53,7 +53,7 @@ object ProtoTypes {
     def necessarilyCompatible(tp: Type, pt: Type)(using Context): Boolean =
       val tpw = tp.widenExpr
       val ptw = pt.widenExpr
-      useUnsafeNullsSubTypeIf(
+      withUnsafeNulls(
         Feature.unsafeNullsEnabled
         || ctx.mode.is(Mode.UnsafeNullConversion))(
           necessarySubType(tpw, ptw))

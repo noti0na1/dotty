@@ -133,7 +133,7 @@ object Implicits:
             else if (mt.paramInfos.lengthCompare(1) == 0 && {
                   var formal = widenSingleton(mt.paramInfos.head)
                   if (approx) formal = wildApprox(formal)
-                  Nullables.useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+                  Nullables.withUnsafeNulls(ctx.mode.is(Mode.UnsafeNullConversion))(
                     explore(argType relaxed_<:< formal.widenExpr))
                 })
               Candidate.Conversion

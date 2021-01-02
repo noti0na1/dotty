@@ -152,7 +152,7 @@ class CheckRealizable(using Context) {
     // In unsafe nulls, we use the old subtyping to check the bounds
     val unsafeNullsSub = unsafeNullsEnabled
     def isSub(tp1: Type, tp2: Type): Boolean =
-      Nullables.useUnsafeNullsSubTypeIf(unsafeNullsSub)(tp1 <:< tp2)
+      Nullables.withUnsafeNulls(unsafeNullsSub)(tp1 <:< tp2)
 
     val memberProblems = withMode(Mode.CheckBounds) {
       for {

@@ -1320,11 +1320,11 @@ class Typer extends Namer
       if (tree.tpt.isEmpty)
         meth1.tpe.widen match {
           case mt: MethodType =>
-            val pt1 = pt.stripNullWhenExplicit
+            val pt1 = pt.stripNull
             pt1 match {
               case SAMType(sam)
               if !defn.isFunctionType(pt1)
-                && useUnsafeNullsSubTypeIf(unsafeNullsEnabled)(mt <:< sam) =>
+                && withUnsafeNulls(unsafeNullsEnabled)(mt <:< sam) =>
                 // SAMs of the form C[?] where C is a class cannot be conversion targets.
                 // The resulting class `class $anon extends C[?] {...}` would be illegal,
                 // since type arguments to `C`'s super constructor cannot be constructed.
@@ -1679,7 +1679,7 @@ class Typer extends Namer
   }
 
   def typedSeqLiteral(tree: untpd.SeqLiteral, pt: Type)(using Context): SeqLiteral = {
-    val elemProto = pt.stripNullWhenExplicit.elemType match {
+    val elemProto = pt.stripNull.elemType match {
       case NoType => WildcardType
       case bounds: TypeBounds => WildcardType(bounds)
       case elemtp => elemtp
@@ -1853,7 +1853,10 @@ class Typer extends Namer
             case _ =>
           }
       val appTpTree =assignType(cpy.AppliedTypeTree(tree)(tpt1, checkedArgs), tpt1, checkedArgs)
-      appTpTree.putAttachment(Nullables.UnsafeNullsKey, config.Feature.unsafeNullsEnabled)
+      if config.Feature.unsafeNullsEnabled then
+        // If unsafe-nulls is enabled, a key is added to the Tree.
+        // So a relaxed bound check can be used for these types In PostTyper.
+        appTpTree.putAttachment(Nullables.UnsafeNullsKey, ())
       appTpTree
     }
   }
@@ -3503,7 +3506,7 @@ class Typer extends Namer
         if defn.isFunctionType(wtp) && !defn.isFunctionType(pt) =>
           pt match {
             case SAMType(sam)
-            if useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+            if withUnsafeNulls(ctx.mode.is(Mode.UnsafeNullConversion))(
                 wtp <:< sam.toFunctionType()) =>
               // was ... && isFullyDefined(pt, ForceDegree.flipBottom)
               // but this prevents case blocks from implementing polymorphic partial functions,
@@ -3569,7 +3572,7 @@ class Typer extends Namer
         // (where `Null` is subtype of all reference types) is used here to
         // recheck the types.
         if pt.isValueType
-          && useUnsafeNullsSubTypeIf(ctx.mode.is(Mode.UnsafeNullConversion))(
+          && withUnsafeNulls(ctx.mode.is(Mode.UnsafeNullConversion))(
               wtp <:< pt) then
           // If unsafe-nulls subtyping successes, we can cast the tree to `pt` directly
           tree.cast(pt)

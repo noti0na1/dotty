@@ -1082,9 +1082,10 @@ trait Applications extends Compatibility {
         if (typedFn.tpe eq TryDynamicCallType) tryDynamicTypeApply()
         else assignType(cpy.TypeApply(tree)(typedFn, typedArgs), typedFn, typedArgs)
     }
-    // If unsafe-nulls is enabled, a key is added to the Tree.
-    // So a relaxed bound check can be used for these types In PostTyper.
-    app.putAttachment(Nullables.UnsafeNullsKey, config.Feature.unsafeNullsEnabled)
+    if config.Feature.unsafeNullsEnabled then
+      // If unsafe-nulls is enabled, a key is added to the Tree.
+      // So a relaxed bound check can be used for these types In PostTyper.
+      app.putAttachment(Nullables.UnsafeNullsKey, ())
     app
   }
 

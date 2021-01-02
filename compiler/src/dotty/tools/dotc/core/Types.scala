@@ -20,7 +20,7 @@ import Denotations._
 import Periods._
 import CheckRealizable._
 import Variances.{Variance, varianceFromInt, varianceToInt, setStructuralVariances, Invariant}
-import typer.Nullables.useUnsafeNullsSubTypeIf
+import typer.Nullables.withUnsafeNulls
 import util.Stats._
 import util.SimpleIdentitySet
 import ast.tpd._
@@ -833,7 +833,7 @@ object Types {
         case OrNull(tp1) if Feature.unsafeNullsEnabled =>
           // Selecting `name` from a type `T | Null` is like selecting `name` from `T`, if
           // unsafeNulls is enabled. This can throw at runtime, but we trade soundness for usability.
-          tp1.findMember(name, pre.stripNullWhenExplicit, required, excluded)
+          tp1.findMember(name, pre.stripNull, required, excluded)
         case _ =>
           // we need to keep the invariant that `pre <: tp`. Branch `union-types-narrow-prefix`
           // achieved that by narrowing `pre` to each alternative, but it led to merge errors in
@@ -1055,7 +1055,7 @@ object Types {
         case _ => tp
       }
       !checkClassInfo && this.isInstanceOf[ClassInfo]
-      || useUnsafeNullsSubTypeIf(relaxedNulls)(this.widenExpr frozen_<:< that.widenExpr)
+      || withUnsafeNulls(relaxedNulls)(this.widenExpr frozen_<:< that.widenExpr)
       || matchLoosely && {
            val this1 = widenNullary(this)
            val that1 = widenNullary(that)
@@ -1082,7 +1082,7 @@ object Types {
      */
     def matches(that: Type)(using Context): Boolean = {
       record("matches")
-      useUnsafeNullsSubTypeIf(ctx.explicitNulls)(
+      withUnsafeNulls(ctx.explicitNulls)(
         TypeComparer.matchesType(this, that, relaxed = !ctx.phase.erasedTypes))
     }
 
@@ -3191,7 +3191,7 @@ object Types {
     def apply(tp: Type)(using Context) =
       if tp.isNullType then tp else OrType(tp, defn.NullType, soft = false)
     def unapply(tp: Type)(using Context): Option[Type] =
-      val tp1 = tp.stripNullWhenExplicit
+      val tp1 = tp.stripNull
       if tp1 ne tp then Some(tp1) else None
   }
 

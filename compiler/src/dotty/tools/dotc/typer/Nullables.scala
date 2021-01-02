@@ -42,7 +42,7 @@ object Nullables:
     TypeBoundsTree(lo, newHi, alias)
 
   /** Use unsafe nulls subtyping where `Null` is a subtype of all reference types */
-  inline def useUnsafeNullsSubTypeIf[T](inline cond: Boolean)(inline op: Context ?=> T)(using Context): T =
+  inline def withUnsafeNulls[T](inline cond: Boolean)(inline op: Context ?=> T)(using Context): T =
     val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
     op(using c)
 
@@ -51,7 +51,7 @@ object Nullables:
    *  Since we are unable to track `unsafeNulls` after Typer, this
    *  key is necessary.
    */
-  val UnsafeNullsKey = Property.StickyKey[Boolean]
+  val UnsafeNullsKey = Property.StickyKey[Unit]
 
   /** A set of val or var references that are known to be not null, plus a set of
    *  variable references that are not known (anymore) to be not null
