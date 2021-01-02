@@ -27,15 +27,14 @@ object Nullables:
     // We cannot check if hi is nullable, because it can cause cyclic reference.
 
   /** Create a nullable type bound
-   *  If the lo is `Null`, `| Null` is added to hi
+   *  If lo is `Null`, `| Null` is added to hi
    */
   def createNullableTypeBounds(lo: Type, hi: Type)(using Context): TypeBounds =
     val newHi = if needNullifyHi(lo, hi) then OrType(hi, defn.NullType, soft = false) else hi
     TypeBounds(lo, newHi)
 
-
   /** Create a nullable type bound tree
-   *  If the lo is `Null`, `| Null` is added to hi
+   *  If lo is `Null`, `| Null` is added to hi
    */
   def createNullableTypeBoundsTree(lo: Tree, hi: Tree, alias: Tree = EmptyTree)(using Context): TypeBoundsTree =
     val hiTpe = hi.typeOpt
@@ -43,7 +42,7 @@ object Nullables:
     TypeBoundsTree(lo, newHi, alias)
 
   /** Use unsafe nulls subtyping where `Null` is a subtype of all reference types */
-  inline def useUnsafeNullsSubTypeIf[T](cond: Boolean)(inline op: Context ?=> T)(using Context): T =
+  inline def useUnsafeNullsSubTypeIf[T](inline cond: Boolean)(inline op: Context ?=> T)(using Context): T =
     val c = if cond then ctx.addMode(Mode.UnsafeNullsSubType) else ctx
     op(using c)
 

@@ -20,7 +20,7 @@ object NullOpsDecorator {
     def stripNullWhenExplicit(using Context): Type = {
       def strip(tp: Type): Type =
         val tpWiden = tp.widenDealias
-        val tpStriped = tpWiden match {
+        val tpStripped = tpWiden match {
           case tp @ OrType(lhs, rhs) =>
             val llhs = strip(lhs)
             val rrhs = strip(rhs)
@@ -40,7 +40,7 @@ object NullOpsDecorator {
             tp.derivedTypeBounds(strip(lo), strip(hi))
           case tp => tp
         }
-        if tpStriped ne tpWiden then tpStriped else tp
+        if tpStripped ne tpWiden then tpStripped else tp
 
       if ctx.explicitNulls then strip(self) else self
     }
@@ -51,7 +51,10 @@ object NullOpsDecorator {
       stripped ne self
     }
 
-    /** If a type is nullable after erasure */
+    /** Types nullable after erasure are:
+     *    - Null itself
+     *    - Any type that is a subtype of `Object`, excluding `Nothing`
+     */
     def isNullableAfterErasure(using Context): Boolean =
       self.isNullType
       || !self.isNothingType
