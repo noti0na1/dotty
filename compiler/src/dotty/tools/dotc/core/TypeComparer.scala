@@ -22,7 +22,6 @@ import transform.SymUtils._
 import scala.util.control.NonFatal
 import typer.ProtoTypes.constrained
 import typer.Applications.productSelectorTypes
-import typer.MutabilityType
 import reporting.trace
 import annotation.constructorOnly
 
@@ -260,21 +259,6 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     }
 
     def firstTry: Boolean = tp2 match {
-      case MutabilityType(tp2, d2) => tp1 match {
-        case MutabilityType(tp1, d1) =>
-          recur(tp1, tp2) && d1 <= d2
-        case _ =>
-          recur(tp1, tp2) && MutabilityType.MutableDegree <= d2
-      }
-      case _ => tp1 match {
-        case MutabilityType(tp1, d1) =>
-          recur(tp1, tp2) && d1 <= MutabilityType.MutableDegree
-        case _ =>
-          firstOfFirstTry
-      }
-    }
-
-    def firstOfFirstTry: Boolean = tp2 match {
       case tp2: NamedType =>
         def compareNamed(tp1: Type, tp2: NamedType): Boolean =
           val ctx = comparerContext
@@ -335,29 +319,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         compareWild
       case tp2: LazyRef =>
         isBottom(tp1) || !tp2.evaluating && recur(tp1, tp2.ref)
-      // case tp2: AnnotatedType if !tp2.isRefining =>
-      //   recur(tp1, tp2.parent)
-      case MutabilityType(tp2, d2) => tp1 match {
-        case MutabilityType(tp1, d1) =>
-          recur(tp1, tp2) && d1 <= d2
-        case _ =>
-          recur(tp1, tp2) && MutabilityType.MutableDegree <= d2
-      }
       case tp2: AnnotatedType if !tp2.isRefining =>
-        tp2 match {
-          case MutabilityType(tp2, d2) => tp1 match {
-            case MutabilityType(tp1, d1) =>
-              recur(tp1, tp2) && d1 <= d2
-            case _ =>
-              recur(tp1, tp2) && MutabilityType.MutableDegree <= d2
-          }
-          case _ => tp1 match {
-            case MutabilityType(tp1, d1) =>
-              recur(tp1, tp2.parent) && d1 <= MutabilityType.MutableDegree
-            case _ =>
-              recur(tp1, tp2.parent)
-          }
-        }
+        recur(tp1, tp2.parent)
       case tp2: ThisType =>
         def compareThis = {
           val cls2 = tp2.cls
@@ -475,8 +438,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         // See i859.scala for an example where we hit this case.
         tp2.isRef(AnyClass, skipRefined = false)
         || !tp1.evaluating && recur(tp1.ref, tp2)
-      // case tp1: AnnotatedType if !tp1.isRefining =>
-      //   recur(tp1.parent, tp2)
+      case tp1: AnnotatedType if !tp1.isRefining =>
+        recur(tp1.parent, tp2)
       case AndType(tp11, tp12) =>
         if (tp11.stripTypeVar eq tp12.stripTypeVar) recur(tp11, tp2)
         else thirdTry
@@ -519,28 +482,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             // This is less ad-hoc than it looks since we produce joins in type inference,
             // and then need to check that they are indeed supertypes of the original types
             // under -Ycheck. Test case is i7965.scala.
-      case MutabilityType(tp1, d1) => tp2 match {
-        case MutabilityType(tp2, d2) =>
-          recur(tp1, tp2) && d1 <= d2
-        case _ =>
-          recur(tp1, tp2) && d1 <= MutabilityType.MutableDegree
-      }
-      case tp1: AnnotatedType if !tp1.isRefining =>
-        tp1 match {
-          case MutabilityType(tp1, d1) => tp2 match {
-            case MutabilityType(tp2, d2) =>
-              recur(tp1, tp2) && d1 <= d2
-            case _ =>
-              recur(tp1, tp2) && d1 <= MutabilityType.MutableDegree
-          }
-          case _ => tp2 match {
-            case MutabilityType(tp2, d2) =>
-              recur(tp1.parent, tp2) && MutabilityType.MutableDegree <= d2
-            case _ =>
-              recur(tp1.parent, tp2)
-          }
-        }
-      case tp1: MatchType =>
+
+     case tp1: MatchType =>
         val reduced = tp1.reduced
         if (reduced.exists) recur(reduced, tp2) else thirdTry
       case _: FlexType =>
@@ -785,8 +728,6 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             false
         }
         compareTypeBounds
-      // case MutabilityType(tp2, _) =>
-      //   fourthTry
       case tp2: AnnotatedType if tp2.isRefining =>
         (tp1.derivesAnnotWith(tp2.annot.sameAnnotation) || tp1.isBottomType) &&
         recur(tp1, tp2.parent)
@@ -906,8 +847,6 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case _ => false
         }
         recur(tp1.underlying, tp2) || compareMatch
-      // case MutabilityType(tp1, d1) =>
-      //   recur(tp1, tp2) && d1 <= MutabilityType.MutableDegree
       case tp1: AnnotatedType if tp1.isRefining =>
         isNewSubType(tp1.parent)
       case JavaArrayType(elem1) =>

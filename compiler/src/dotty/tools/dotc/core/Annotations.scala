@@ -83,6 +83,10 @@ object Annotations {
 
     def sameAnnotation(that: Annotation)(using Context): Boolean =
       symbol == that.symbol && tree.sameTree(that.tree)
+
+    /** Operations for hash-consing, can be overridden */
+    def hash: Int = System.identityHashCode(this)
+    def eql(that: Annotation) = this eq that
   }
 
   case class ConcreteAnnotation(t: Tree) extends Annotation:
