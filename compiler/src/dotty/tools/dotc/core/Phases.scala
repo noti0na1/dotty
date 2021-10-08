@@ -14,9 +14,11 @@ import dotty.tools.dotc.transform.MegaPhase._
 import dotty.tools.dotc.transform._
 import Periods._
 import parsing.Parser
+import printing.XprintMode
 import typer.{TyperPhase, RefChecks}
 import typer.ImportInfo.withRootImports
-import ast.tpd
+import mutability.CheckMutability
+import ast.{tpd, untpd}
 import scala.annotation.internal.sharable
 import scala.util.control.NonFatal
 
@@ -217,6 +219,7 @@ object Phases {
     private var myCountOuterAccessesPhase: Phase = _
     private var myFlattenPhase: Phase = _
     private var myGenBCodePhase: Phase = _
+    private var myCheckMutabilityPhase: Phase = _
 
     final def parserPhase: Phase = myParserPhase
     final def typerPhase: Phase = myTyperPhase
@@ -240,6 +243,7 @@ object Phases {
     final def countOuterAccessesPhase = myCountOuterAccessesPhase
     final def flattenPhase: Phase = myFlattenPhase
     final def genBCodePhase: Phase = myGenBCodePhase
+    final def checkMutabilityPhase: Phase = myCheckMutabilityPhase
 
     private def setSpecificPhases() = {
       def phaseOfClass(pclass: Class[?]) = phases.find(pclass.isInstance).getOrElse(NoPhase)
@@ -266,6 +270,7 @@ object Phases {
       myExplicitOuterPhase = phaseOfClass(classOf[ExplicitOuter])
       myGettersPhase = phaseOfClass(classOf[Getters])
       myGenBCodePhase =  phaseOfClass(classOf[GenBCode])
+      myCheckMutabilityPhase = phaseOfClass(classOf[CheckMutability])
     }
 
     final def isAfterTyper(phase: Phase): Boolean = phase.id > typerPhase.id
@@ -298,6 +303,9 @@ object Phases {
     /** If set, implicit search is enabled */
     def allowsImplicitSearch: Boolean = false
 
+    /** If set equate Skolem types with underlying types */
+    def widenSkolems: Boolean = false
+
     /** List of names of phases that should precede this phase */
     def runsAfter: Set[String] = Set.empty
 
@@ -311,6 +319,10 @@ object Phases {
         run(using unitCtx)
         unitCtx.compilationUnit
       }
+
+    /** Convert a compilation unit's tree to a string; can be overridden */
+    def show(tree: untpd.Tree)(using Context): String =
+      tree.show(using ctx.withProperty(XprintMode, Some(())))
 
     def description: String = phaseName
 
@@ -439,6 +451,7 @@ object Phases {
   def lambdaLiftPhase(using Context): Phase             = ctx.base.lambdaLiftPhase
   def flattenPhase(using Context): Phase                = ctx.base.flattenPhase
   def genBCodePhase(using Context): Phase               = ctx.base.genBCodePhase
+  def checkMutabilityPhase(using Context): Phase        = ctx.base.checkMutabilityPhase
 
   def unfusedPhases(using Context): Array[Phase] = ctx.base.phases
 

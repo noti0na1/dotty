@@ -24,6 +24,7 @@ import typer.ProtoTypes.constrained
 import typer.Applications.productSelectorTypes
 import reporting.trace
 import annotation.constructorOnly
+import mutability.{MutabilityType, MutabilityQualifier}
 
 /** Provides methods to compare types.
  */
@@ -319,6 +320,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         compareWild
       case tp2: LazyRef =>
         isBottom(tp1) || !tp2.evaluating && recur(tp1, tp2.ref)
+      case tp2mt @ MutabilityType(tp2, tp2q) =>
+        tp1.widenSingleton match
+          case tp1mt @ MutabilityType(tp1, tp1q) =>
+            recur(tp1, tp2) && tp1q <= tp2q
+          case _ =>
+            recur(tp1, tp2) && MutabilityQualifier.Mutable <= tp2q
       case tp2: AnnotatedType if !tp2.isRefining =>
         recur(tp1, tp2.parent)
       case tp2: ThisType =>
@@ -438,8 +445,6 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         // See i859.scala for an example where we hit this case.
         tp2.isRef(AnyClass, skipRefined = false)
         || !tp1.evaluating && recur(tp1.ref, tp2)
-      case tp1: AnnotatedType if !tp1.isRefining =>
-        recur(tp1.parent, tp2)
       case AndType(tp11, tp12) =>
         if (tp11.stripTypeVar eq tp12.stripTypeVar) recur(tp11, tp2)
         else thirdTry
@@ -482,8 +487,15 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             // This is less ad-hoc than it looks since we produce joins in type inference,
             // and then need to check that they are indeed supertypes of the original types
             // under -Ycheck. Test case is i7965.scala.
-
-     case tp1: MatchType =>
+      case MutabilityType(tp1, tp1q) =>
+        tp2.widenSingleton match
+          case MutabilityType(tp2, tp2q) =>
+            recur(tp1, tp2) && tp1q <= tp2q
+          case _ =>
+            recur(tp1, tp2) && tp1q <= MutabilityQualifier.Mutable
+      case tp1: AnnotatedType if !tp1.isRefining =>
+        recur(tp1.parent, tp2)
+      case tp1: MatchType =>
         val reduced = tp1.reduced
         if (reduced.exists) recur(reduced, tp2) else thirdTry
       case _: FlexType =>
@@ -739,6 +751,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             false
         }
         compareClassInfo
+      case tp2: SkolemType if ctx.phase.widenSkolems =>
+        recur(tp1, tp2.info)
       case _ =>
         fourthTry
     }

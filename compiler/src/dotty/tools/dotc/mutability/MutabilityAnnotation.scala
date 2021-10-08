@@ -39,4 +39,13 @@ case class MutabilityAnnotation(qualifier: MutabilityQualifier) extends Annotati
 end MutabilityAnnotation
 
 object MutabilityAnnotation:
-  def isMutabilityAnnotationSymbol(): Boolean = false
+  def isMutabilityAnnotationSymbol(sym: Symbol)(using Context): Boolean =
+    sym == defn.MutableAnnot
+    || sym == defn.PolyreadAnnot
+    || sym == defn.ReadonlyAnnot
+
+  def mutabilitySymbolToQualifier(sym: Symbol)(using Context): MutabilityQualifier =
+    if sym == defn.MutableAnnot then Mutable
+    else if sym == defn.PolyreadAnnot then Polyread
+    else if sym == defn.ReadonlyAnnot then Readonly
+    else throw Exception("wrong symbol")

@@ -7,6 +7,7 @@ import typer.{TyperPhase, RefChecks}
 import parsing.Parser
 import Phases.Phase
 import transform._
+import mutability._
 import dotty.tools.backend
 import backend.jvm.{CollectSuperCalls, GenBCode}
 import localopt.StringInterpolatorOpt
@@ -81,6 +82,8 @@ class Compiler {
          new SpecializeApplyMethods, // Adds specialized methods to FunctionN
          new TryCatchPatterns,       // Compile cases in try/catch
          new PatternMatcher) ::      // Compile pattern matches
+    List(new PreRecheck) ::          // Preparations for check captures phase, enabled under -Ycc
+    List(new CheckMutability) ::     // CheckMutability
     List(new ElimOpaque,             // Turn opaque into normal aliases
          new sjs.ExplicitJSClasses,  // Make all JS classes explicit (Scala.js only)
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.
