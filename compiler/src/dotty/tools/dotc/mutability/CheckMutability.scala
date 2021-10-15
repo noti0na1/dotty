@@ -13,7 +13,6 @@ import NameKinds._
 import typer.ProtoTypes._
 import transform._
 import Recheck._
-import MutabilityType.ensureMutabilityType
 
 class CheckMutability extends Recheck:
   thisPhase =>
@@ -101,7 +100,7 @@ class CheckMutability extends Recheck:
 
             if tree.tpt.hasAttachment(RecheckedType) && !sym.isConstructor then
               val newInfo = integrateRT(sym.info, sym.paramSymss, Nil, Nil)
-              println(i"update info $sym: ${sym.info} --> $newInfo")
+              // println(i"update info $sym: ${sym.info} --> $newInfo")
                 // .showing(i"update info $sym: ${sym.info} --> $result", recheckr)
               if newInfo ne sym.info then
                 val completer = new LazyType:
