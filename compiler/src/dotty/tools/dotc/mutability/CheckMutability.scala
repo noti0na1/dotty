@@ -128,13 +128,15 @@ class CheckMutability extends Recheck:
             case _ => MutabilityQualifier.Mutable
 
           @tailrec def findOuterMethod(s: Symbol): Symbol =
-            if s == NoSymbol || s.is(Method) then s
+            if s == NoSymbol || s.denot.isRealMethod then s
             else findOuterMethod(s.owner)
 
           // if x is `this`, get mutability from current method
           qual match
             case qual: This =>
-              preQuli = findOuterMethod(ctx.owner).findMutability
+              val outerMethod = findOuterMethod(ctx.owner)
+              // println(outerMethod)
+              if outerMethod != NoSymbol then preQuli = outerMethod.findMutability
             case _ =>
 
           val mbr = qualType.findMember(name, qualType,
@@ -144,12 +146,12 @@ class CheckMutability extends Recheck:
           // check assign `x.a = ???`
           // the mutability of x must be Mutable
           if pt == AssignProto && preQuli > MutabilityQualifier.Mutable then
-            report.error(i"the type of $qual must be mutable", tree.srcPos)
+            report.error(i"trying to mutate an immutable value of $qual", tree.srcPos)
 
           // check method calls `x.f(...)`
           // the mutability of x must be less than or equal to the mutability of f
           val mbrSym = mbr.symbol
-          if mbrSym.is(Method) then
+          if mbrSym.denot.isRealMethod && !mbrSym.denot.isStatic then
             val mbrQuli = mbrSym.findMutability
             if preQuli > mbrQuli then
             report.error(i"calling $mbrQuli $mbr on $preQuli $qual", tree.srcPos)
