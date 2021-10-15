@@ -18,6 +18,7 @@ object MutabilityType:
         case ann => Some((tp.parent, mutabilitySymbolToQualifier(tp.annot.symbol)))
     else None
 
-  def ensureMutabilityType(tp: Type)(using Context): AnnotatedType = tp match
+  def ensureMutabilityType(tp: Type)(using Context): Type = tp match
     case tp: AnnotatedType if isMutabilityAnnotationSymbol(tp.annot.symbol) => tp
+    case NoType => tp
     case _ => apply(tp, MutabilityQualifier.Mutable)

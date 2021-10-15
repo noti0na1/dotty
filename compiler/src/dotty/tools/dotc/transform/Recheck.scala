@@ -23,7 +23,7 @@ import reporting.trace
 object Recheck:
 
   /** Attachment key for rechecked types of TypeTrees */
-  private val RecheckedType = Property.Key[Type]
+  val RecheckedType = Property.Key[Type]
 
 abstract class Recheck extends Phase, IdentityDenotTransformer:
   thisPhase =>
@@ -44,7 +44,7 @@ abstract class Recheck extends Phase, IdentityDenotTransformer:
 
   def run(using Context): Unit =
     val rechecker = newRechecker()
-    rechecker.transformTypes.traverse(ctx.compilationUnit.tpdTree)
+    rechecker.transformTypes(ctx.compilationUnit.tpdTree)
     rechecker.checkUnit(ctx.compilationUnit)
 
   def newRechecker()(using Context): Rechecker
@@ -78,7 +78,7 @@ abstract class Recheck extends Phase, IdentityDenotTransformer:
 
     def transformType(tp: Type, inferred: Boolean)(using Context): Type = tp
 
-    object transformTypes extends TreeTraverser:
+    object myTransformTypes extends TreeTraverser:
 
       // Substitute parameter symbols in `from` to paramRefs in corresponding
       // method or poly types `to`. We use a single BiTypeMap to do everything.
@@ -160,18 +160,20 @@ abstract class Recheck extends Phase, IdentityDenotTransformer:
             val sym = tree.symbol
             sym.updateInfo(transformType(sym.info, inferred = true))
           case _ =>
-    end transformTypes
+    end myTransformTypes
+
+    def transformTypes(tree: Tree)(using Context) = myTransformTypes.traverse(tree)
 
     def constFold(tree: Tree, tp: Type)(using Context): Type =
       val tree1 = tree.withType(tp)
       val tree2 = ConstFold(tree1)
       if tree2 ne tree1 then tree2.tpe else tp
 
-    def recheckIdent(tree: Ident)(using Context): Type =
+    def recheckIdent(tree: Ident, pt: Type)(using Context): Type =
       tree.tpe
 
     /** Keep the symbol of the `select` but re-infer its type */
-    def recheckSelect(tree: Select)(using Context): Type = tree match
+    def recheckSelect(tree: Select, pt: Type)(using Context): Type = tree match
       case Select(qual, name) =>
         val qualType = recheck(qual).widenIfUnstable
         if name.is(OuterSelectName) then tree.tpe
@@ -261,7 +263,7 @@ abstract class Recheck extends Phase, IdentityDenotTransformer:
       tptType
 
     def recheckAssign(tree: Assign)(using Context): Type =
-      val lhsType = recheck(tree.lhs)
+      val lhsType = recheck(tree.lhs, AssignProto)
       recheck(tree.rhs, lhsType.widen)
       defn.UnitType
 
@@ -359,8 +361,8 @@ abstract class Recheck extends Phase, IdentityDenotTransformer:
       def recheckNamed(tree: NameTree, pt: Type)(using Context): Type =
         val sym = tree.symbol
         tree match
-          case tree: Ident => recheckIdent(tree)
-          case tree: Select => recheckSelect(tree)
+          case tree: Ident => recheckIdent(tree, pt)
+          case tree: Select => recheckSelect(tree, pt)
           case tree: Bind => recheckBind(tree, pt)
           case tree: ValOrDefDef =>
             if tree.isEmpty then NoType
