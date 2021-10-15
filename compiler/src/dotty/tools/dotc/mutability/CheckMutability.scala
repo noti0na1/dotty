@@ -13,6 +13,7 @@ import NameKinds._
 import typer.ProtoTypes._
 import transform._
 import Recheck._
+import annotation.tailrec
 
 class CheckMutability extends Recheck:
   thisPhase =>
@@ -108,7 +109,6 @@ class CheckMutability extends Recheck:
                     denot.info = newInfo
                     recheckDef(tree, sym)
                 sym.updateInfo(completer)
-              // sym.updateInfo(newInfo)
           // case tree: Bind =>
           //   println(tree)
           //   val sym = tree.symbol
@@ -118,21 +118,41 @@ class CheckMutability extends Recheck:
 
     override def recheckSelect(tree: Select, pt: Type)(using Context): Type = tree match
       case Select(qual, name) =>
-        val qualType = recheck(qual).widenIfUnstable
+        // println(tree)
+        var qualType = recheck(qual).widenIfUnstable
         if name.is(OuterSelectName) then tree.tpe
         else
           //val pre = ta.maybeSkolemizePrefix(qualType, name)
+          var preQuli = qualType.widen match
+            case MutabilityType(qt, q) => qualType = qt; q
+            case _ => MutabilityQualifier.Mutable
+
+          @tailrec def findOuterMethod(s: Symbol): Symbol =
+            if s == NoSymbol || s.is(Method) then s
+            else findOuterMethod(s.owner)
+
+          // if x is `this`, get mutability from current method
+          qual match
+            case qual: This =>
+              preQuli = findOuterMethod(ctx.owner).findMutability
+            case _ =>
+
           val mbr = qualType.findMember(name, qualType,
               excluded = if tree.symbol.is(Private) then EmptyFlags else Private
             ).suchThat(tree.symbol ==)
-          if pt == AssignProto then
-            qualType.widen match
-              case MutabilityType(qualType, q) =>
-                if q > MutabilityQualifier.Mutable then
-                  report.error(i"the type of $qual must be mutable", tree.srcPos)
-                constFold(tree, qualType.select(name, mbr))
-              case _ =>
-                constFold(tree, qualType.select(name, mbr))
-          else
-            constFold(tree, qualType.select(name, mbr))
-            //.showing(i"recheck select $qualType . $name : ${mbr.symbol.info} = $result")
+
+          // check assign `x.a = ???`
+          // the mutability of x must be Mutable
+          if pt == AssignProto && preQuli > MutabilityQualifier.Mutable then
+            report.error(i"the type of $qual must be mutable", tree.srcPos)
+
+          // check method calls `x.f(...)`
+          // the mutability of x must be less than or equal to the mutability of f
+          val mbrSym = mbr.symbol
+          if mbrSym.is(Method) then
+            val mbrQuli = mbrSym.findMutability
+            if preQuli > mbrQuli then
+            report.error(i"calling $mbrQuli $mbr on $preQuli $qual", tree.srcPos)
+
+          constFold(tree, qualType.select(name, mbr))
+          //.showing(i"recheck select $qualType . $name : ${mbr.symbol.info} = $result")

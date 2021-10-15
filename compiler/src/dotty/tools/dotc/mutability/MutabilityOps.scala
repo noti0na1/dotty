@@ -21,3 +21,11 @@ extension (tp: Type)
   def ensureMutabilityType(using Context): Type =
     if tp == NoType || tp.hasMutabilityType then tp
     else MutabilityType(tp, MutabilityQualifier.Mutable)
+
+extension (sym: Symbol)
+
+  def findMutability(using Context): MutabilityQualifier =
+    sym.annotations.map(_.symbol)
+      .find(isMutabilityAnnotationSymbol)
+      .map(mutabilitySymbolToQualifier)
+      .getOrElse(MutabilityQualifier.Mutable)
