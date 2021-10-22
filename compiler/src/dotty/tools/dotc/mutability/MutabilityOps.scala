@@ -46,7 +46,8 @@ extension (tp: Type)
     case _ => tp
 
   def setMutability(q: MutabilityQualifier)(using Context): Type =
-    MutabilityType(tp.removeTopLeaveMutabilityType, q)
+    if tp == NoType then tp
+    else MutabilityType(tp.removeTopLeaveMutabilityType, q)
 
 extension (sym: Symbol)
 

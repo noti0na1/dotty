@@ -116,61 +116,65 @@ class CheckMutability extends Recheck:
           case _ =>
     end myMutabilityTransformTypes
 
-    override def recheckSelect(tree: Select, pt: Type)(using Context): Type = tree match
-      case Select(qual, name) =>
-        // println(tree)
-        var qualType = recheck(qual).widenIfUnstable
+    override def recheckSelect(tree: Select, pt: Type)(using Context): Type =
+      val qual = tree.qualifier
+      val name = tree.name
+      var qualType = recheck(qual).widenIfUnstable
 
-        if name.is(OuterSelectName) then return tree.tpe
+      if name.is(OuterSelectName) then return tree.tpe
 
-        //val pre = ta.maybeSkolemizePrefix(qualType, name)
-        var preQuli = qualType match
-          case MutabilityType(qt, q) => qualType = qt; q
-          case _ => MutabilityQualifier.Mutable
+      var quilm = qualType match
+        case MutabilityType(qt, q) => qualType = qt; q
+        case _ => MutabilityQualifier.Mutable
 
-        // if x is `C.this`, get mutability from enclosing method in C
-        qual match
-          case qual: This =>
-            val cs = qual.symbol
+      // if x is `C.this`, get mutability from enclosing method in C
+      qual match
+        case qual: This =>
+          val cs = qual.symbol
 
-            @tailrec def searchEnclosing(s: Symbol): Symbol =
-              if s == NoSymbol || s.isRealMethod && s.owner == cs then s
-              else if !s.is(Method) && s.owner == cs then cs.primaryConstructor // TODO
-              else if s.exists then searchEnclosing(s.owner)
-              else NoSymbol
+          @tailrec def searchEnclosing(s: Symbol): Symbol =
+            if s == NoSymbol || s.isRealMethod && s.owner == cs then s
+            else if !s.is(Method) && s.owner == cs then cs.primaryConstructor // TODO
+            else if s.exists then searchEnclosing(s.owner)
+            else NoSymbol
 
-            val enclosingMethod = searchEnclosing(ctx.owner)
-            // println(cs)
-            // println(enclosingMethod)
-            if enclosingMethod != NoSymbol then preQuli = enclosingMethod.findMutability
-          case _ =>
+          val enclosingMethod = searchEnclosing(ctx.owner)
+          // println(cs)
+          // println(enclosingMethod)
+          if enclosingMethod != NoSymbol then
+            quilm = enclosingMethod.findMutability
+        case _ =>
 
-        val mbr = qualType.findMember(name, qualType,
-            excluded = if tree.symbol.is(Private) then EmptyFlags else Private
-          ).suchThat(tree.symbol ==)
+      val mbr = qualType.findMember(name, qualType,
+          excluded = if tree.symbol.is(Private) then EmptyFlags else Private
+        ).suchThat(tree.symbol ==)
 
-        // check assign `x.a = ???`
-        // the mutability of x must be Mutable
-        if pt == AssignProto then
-          // println(i"check assign $tree, $qualType with $preQuli")
-          if preQuli > MutabilityQualifier.Mutable then
-            report.error(i"trying to mutate a readonly field of $qual", tree.srcPos)
+      // check assign `x.a = ???`
+      // the mutability of x must be Mutable
+      if pt == AssignProto then
+        // println(i"check assign $tree, $qualType with $preQuli")
+        if quilm > MutabilityQualifier.Mutable then
+          report.error(i"trying to mutate a readonly field of $qual", tree.srcPos)
 
-        // check method calls `x.f(...)`
-        // the mutability of x must be less than or equal to the mutability of f
-        val mbrSym = mbr.symbol
-        if mbrSym.denot.isRealMethod && !mbrSym.denot.isStatic then
-          val mbrQuli = mbrSym.findMutability
-          if preQuli > mbrQuli then
-          report.error(i"calling $mbrQuli $mbr on $preQuli $qual", tree.srcPos)
+      // check method calls `x.f(...)`
+      // the mutability of x must be less than or equal to the mutability of f
+      val mbrSym = mbr.symbol
+      if mbrSym.denot.isRealMethod && !mbrSym.denot.isStatic then
+        val mbrm = mbrSym.findMutability
+        if quilm > mbrm then
+          report.error(i"calling $mbrm $mbr on $quilm $qual", tree.srcPos)
 
-        val tp = constFold(tree, qualType.select(name, mbr))
+      val tp = constFold(tree, qualType.select(name, mbr))
 
-        // when selecting field with polyread annotation
-        if !mbrSym.is(Method) then
-          tp match
-            case MutabilityType(_, q) if q == MutabilityQualifier.Polyread =>
-              MutabilityType(tp, preQuli)
-            case _ => tp
-        else tp
-        //.showing(i"recheck select $qualType . $name : ${mbr.symbol.info} = $result")
+      // when selecting field with polyread annotation
+      if !mbrSym.is(Method) then
+        tp match
+          case MutabilityType(_, q) if q == MutabilityQualifier.Polyread =>
+            MutabilityType(tp, quilm)
+          case _ => tp
+      else tp
+      //.showing(i"recheck select $qualType . $name : ${mbr.symbol.info} = $result")
+
+  end MutabilityChecker
+
+end CheckMutability
