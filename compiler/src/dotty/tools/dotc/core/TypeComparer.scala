@@ -321,7 +321,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case tp2: LazyRef =>
         isBottom(tp1) || !tp2.evaluating && recur(tp1, tp2.ref)
       case tp2mt @ MutabilityType(tp2, tp2q) =>
-        tp1.widen match
+        tp1 match
           case tp1mt @ MutabilityType(tp1, tp1q) =>
             recur(tp1, tp2) && tp1q <= tp2q
           case _ =>
@@ -488,7 +488,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             // and then need to check that they are indeed supertypes of the original types
             // under -Ycheck. Test case is i7965.scala.
       case MutabilityType(tp1, tp1q) =>
-        tp2.widen match
+        tp2 match
           case MutabilityType(tp2, tp2q) =>
             recur(tp1, tp2) && tp1q <= tp2q
           case _ =>
