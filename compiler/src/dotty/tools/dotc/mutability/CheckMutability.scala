@@ -14,6 +14,7 @@ import typer.ProtoTypes._
 import transform._
 import Recheck._
 import annotation.tailrec
+import typer.RefChecks
 
 class CheckMutability extends Recheck:
   thisPhase =>
@@ -25,6 +26,18 @@ class CheckMutability extends Recheck:
   override def isEnabled(using Context) = ctx.settings.Yiref.value
 
   override def newRechecker()(using Context) = MutabilityChecker(ctx)
+
+  override def run(using Context): Unit =
+    // checkOverrides.traverse(ctx.compilationUnit.tpdTree)
+    super.run
+
+  def checkOverrides = new TreeTraverser:
+    def traverse(t: Tree)(using Context) =
+      t match
+        case t: Template =>
+          RefChecks.checkAllOverrides(ctx.owner.asClass)
+        case _ =>
+      traverseChildren(t)
 
   class MutabilityChecker(ictx: Context) extends Rechecker(ictx):
     import ast.tpd.*
@@ -159,7 +172,7 @@ class CheckMutability extends Recheck:
       // check method calls `x.f(...)`
       // the mutability of x must be less than or equal to the mutability of f
       val mbrSym = mbr.symbol
-      if mbrSym.denot.isRealMethod && !mbrSym.denot.isStatic then
+      if mbrSym.isRealMethod && !mbrSym.isStatic then
         val mbrm = mbrSym.findMutability
         if quilm > mbrm then
           report.error(i"calling $mbrm $mbr on $quilm $qual", tree.srcPos)
@@ -172,8 +185,11 @@ class CheckMutability extends Recheck:
           case MutabilityType(_, q) if q == MutabilityQualifier.Polyread =>
             MutabilityType(tp, quilm)
           case _ => tp
-      else tp
+      else tp // TODO
       //.showing(i"recheck select $qualType . $name : ${mbr.symbol.info} = $result")
+
+    // override def recheckApply(tree: Apply, pt: Type)(using Context): Type =
+    //   ???
 
   end MutabilityChecker
 
