@@ -49,6 +49,29 @@ object NullOpsDecorator:
       val stripped = self.stripNull
       stripped ne self
     }
+
+    /** Strips nulls from this type deeply.
+     *  Compaired to `stripNull`, `stripNullsDeep` will apply `stripNull` to
+     *  each member of function types as well.
+     */
+    def stripNullsDeep(using Context): Type =
+      object DeepStripNullsMap extends TypeMap:
+        override def apply(tp: Type): Type = tp match
+          case appTp @ AppliedType(tycon, targs) =>
+            derivedAppliedType(appTp, tycon, targs.map(this))
+          case ptp: PolyType =>
+            derivedLambdaType(ptp)(ptp.paramInfos, this(ptp.resType))
+          case mtp: MethodType =>
+            mapOver(mtp)
+          case tp: TypeAlias =>
+            mapOver(tp)
+          case _ =>
+            val tp1 = tp.stripNull
+            if tp1 eq tp then tp else this(tp1)
+      end DeepStripNullsMap
+
+      if ctx.explicitNulls then DeepStripNullsMap(self) else self
+
   end extension
 
   import ast.tpd._
