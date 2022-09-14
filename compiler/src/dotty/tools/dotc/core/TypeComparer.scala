@@ -24,6 +24,8 @@ import typer.Applications.productSelectorTypes
 import reporting.trace
 import annotation.constructorOnly
 import cc.{CapturingType, derivedCapturingType, CaptureSet, stripCapturing, isBoxedCapturing, boxed, boxedUnlessFun, boxedIfTypeParam}
+import mutability._
+import MutabilityOps._
 
 /** Provides methods to compare types.
  */
@@ -238,6 +240,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    */
   protected def recur(tp1: Type, tp2: Type): Boolean = trace(s"isSubType ${traceInfo(tp1, tp2)}${approx.show}", subtyping) {
 
+    // println("recur " + tp1 + " <:< " + tp2)
+
     def monitoredIsSubType = {
       if (pendingSubTypes == null) {
         pendingSubTypes = util.HashSet[(Type, Type)]()
@@ -289,6 +293,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             case info2: TypeAlias =>
               if recur(tp1, info2.alias) then return true
               if tp2.asInstanceOf[TypeRef].canDropAlias then return false
+            case info2 @ MutabilityType(_, _) =>
+              return recur(tp1, info2)
             case _ =>
           tp1 match
             case tp1: NamedType =>
@@ -296,6 +302,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
                 case info1: TypeAlias =>
                   if recur(info1.alias, tp2) then return true
                   if tp1.asInstanceOf[TypeRef].canDropAlias then return false
+                case info1 @ MutabilityType(_, _) =>
+                  return recur(info1, tp2)
                 case _ =>
               }
               val sym2 = tp2.symbol
@@ -340,6 +348,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       case tp2: LazyRef =>
         isBottom(tp1) || !tp2.evaluating && recur(tp1, tp2.ref)
       case CapturingType(_, _) =>
+        secondTry
+      case MutabilityType(_, _) =>
         secondTry
       case tp2: AnnotatedType if !tp2.isRefining =>
         recur(tp1, tp2.parent)
@@ -525,6 +535,17 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         if subCaptures(refs1, tp2.captureSet, frozenConstraint).isOK && sameBoxed(tp1, tp2, refs1)
         then recur(parent1, tp2)
         else thirdTry
+      case tp1 @ MutabilityType(_, _) =>
+        // println("in second try: " + tp1.show + " <: " + tp2.show)
+        tp2.normalizeMutabilityType match
+          case MutabilityType(tp2n, mut2) =>
+            tp1.normalizeMutabilityType match
+              case MutabilityType(tp1n, mut1) =>
+                recur(tp1n, tp2n) && mut1 <= mut2
+              case tp1 =>
+                thirdTry
+          case _ =>
+            thirdTry
       case tp1: AnnotatedType if !tp1.isRefining =>
         recur(tp1.parent, tp2)
       case tp1: MatchType =>
@@ -824,6 +845,20 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             println(i"assertion failed while compare captured $tp1 <:< $tp2")
             throw ex
         compareCapturing || fourthTry
+      case tp2 @ MutabilityType(_, _) =>
+        // println("in third try: " + tp1.show + " <: " + tp2.show)
+        // println("tp1: " + tp1.normalizeMutabilityType)
+        // println("tp2: " + tp2.normalizeMutabilityType)
+        tp1.normalizeMutabilityType match
+          case tp1 @ MutabilityType(tp1n, mut1) =>
+            tp2.normalizeMutabilityType match
+              case MutabilityType(tp2n, mut2) =>
+                // println("in third try, can check now: " + tp1n.show + " <: " + tp2n.show)
+                recur(tp1n, tp2n) && mut1 <= mut2
+              case tp2n =>
+                recur(tp1, tp2n)
+          case _ =>
+            fourthTry
       case tp2: AnnotatedType if tp2.isRefining =>
         (tp1.derivesAnnotWith(tp2.annot.sameAnnotation) || tp1.isBottomType) &&
         recur(tp1, tp2.parent)

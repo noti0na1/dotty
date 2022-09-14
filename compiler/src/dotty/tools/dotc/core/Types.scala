@@ -38,6 +38,7 @@ import java.lang.ref.WeakReference
 import compiletime.uninitialized
 import cc.{CapturingType, CaptureSet, derivedCapturingType, isBoxedCapturing, EventuallyCapturingType, boxedUnlessFun}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
+import mutability.MutabilityOps._
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
@@ -1460,6 +1461,9 @@ object Types {
 
     /** Perform successive widenings and dealiasings while rewrapping refining annotations, until none can be applied anymore */
     final def widenDealiasKeepRefiningAnnots(using Context): Type = widenDealias1(keepIfRefining)
+
+    /** Perform successive widenings and dealiasings while rewrapping mutability annotations, until none can be applied anymore */
+    final def widenDealiasKeepMutabilityAnnots(using Context): Type = widenDealias1(keepIfMutability)
 
     /** Widen from constant type to its underlying non-constant
      *  base type.
@@ -6376,6 +6380,7 @@ object Types {
   private val keepAlways: AnnotatedType => Context ?=> Boolean = _ => true
   private val keepNever: AnnotatedType => Context ?=> Boolean = _ => false
   private val keepIfRefining: AnnotatedType => Context ?=> Boolean = _.isRefining
+  private val keepIfMutability: AnnotatedType => Context ?=> Boolean = _.annot.toMutabilityQualifier.isDefined
 
   val isBounds: Type => Boolean = _.isInstanceOf[TypeBounds]
 }
