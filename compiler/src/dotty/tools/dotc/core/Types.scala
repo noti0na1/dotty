@@ -1417,6 +1417,8 @@ object Types {
     /** Like `dealiasKeepAnnots`, but keeps only refining annotations */
     final def dealiasKeepRefiningAnnots(using Context): Type = dealias1(keepIfRefining, keepOpaques = false)
 
+    final def dealiasKeepMutabilityAnnots(using Context): Type = dealias1(keepIfMutability, keepOpaques = false)
+
     /** Follow non-opaque aliases and dereferences LazyRefs, annotated types and instantiated
      *  TypeVars until type is no longer alias type, annotated type, LazyRef,
      *  or instantiated type variable.

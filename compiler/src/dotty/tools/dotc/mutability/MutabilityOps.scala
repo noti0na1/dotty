@@ -26,7 +26,7 @@ object MutabilityOps:
     // and combine multiple Mutability annotations into a single one.
     def normalizeMutabilityType(using Context): Type =
       def recur(t: Type, mut: MutabilityQualifier): Type =
-        val tw = t.widenDealiasKeepMutabilityAnnots
+        val tw = t.dealiasKeepMutabilityAnnots
         val tnorm = tw match
           case MutabilityType(tparent, mut2) =>
             recur(tparent, if mut < mut2 then mut2 else mut)
