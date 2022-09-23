@@ -4,6 +4,7 @@ package mutability
 
 import core.*
 import Types.*, Symbols.*, Contexts.*, Annotations.*, MutabilityQualifier.*
+import Ordering.Implicits._
 
 object MutabilityOps:
 
@@ -22,35 +23,29 @@ object MutabilityOps:
       else None
 
   extension (tp: Type)
-    // Distribute Mutability annotations into And and Or types,
-    // and combine multiple Mutability annotations into a single one.
-    def normalizeMutabilityType(using Context): Type =
-      def recur(t: Type, mut: MutabilityQualifier): Type =
-        val tw = t.dealiasKeepMutabilityAnnots
-        val tnorm = tw match
-          case MutabilityType(tparent, mut2) =>
-            recur(tparent, if mut < mut2 then mut2 else mut)
-          case tw: AndOrType =>
-            tw.derivedAndOrType(recur(tw.tp1, mut), recur(tw.tp2, mut))
-          case tw: TypeBounds =>
-            tw.derivedTypeBounds(recur(tw.lo, mut), recur(tw.hi, mut))
-          case tw: TypeRef =>
-            tw.info match {
-              case TypeBounds(lo, _) =>
-                if readonlyNothingType frozen_<:< lo then
-                  MutabilityType(tw, Readonly)
-                else if polyreadNothingType frozen_<:< lo then
-                  MutabilityType(tw, Polyread)
-                else
-                  MutabilityType(tw, mut)
-              case _ =>
-                MutabilityType(tw, mut)
-            }
-          case tw =>
-            MutabilityType(tw, mut)
-        if tnorm eq tw then t else tnorm
-      val r = recur(tp, Mutable)
-      // println("normalizeMutabilityType " + tp.show + " -> " + r.show)
-      r
+    def computeMutability(using Context): MutabilityQualifier =
+      def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match
+        case MutabilityType(parent, mut) =>
+          mut.max(recur(parent))
+        case tp: AnnotatedType =>
+          recur(tp.parent)
+        case tp: AndOrType =>
+          val tp1Mut = recur(tp.tp1)
+          val tp2Mut = recur(tp.tp2)
+          tp1Mut.max(tp2Mut)
+        case tp: TypeRef =>
+          recur(tp.info)
+        case tp: TypeBounds =>
+          recur(tp.hi)
+        case tp: SingletonType =>
+          recur(tp.underlying)
+        case tp: ExprType =>
+          recur(tp.resType)
+        case tp: MatchType =>
+          val tp1 = tp.reduced
+          if tp1.exists then recur(tp1)
+          else Mutable
+        case _ => Mutable
+      recur(tp)
 
 

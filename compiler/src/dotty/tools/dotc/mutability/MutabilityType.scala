@@ -20,7 +20,6 @@ object MutabilityType:
     // if ctx.phase == Phases.checkMutabilityPhase then None else
     val r = tp.annot.toMutabilityQualifier.map((tp.parent, _))
     // println(s"unapply MutabilityType $tp -> $r")
-    // throw new Exception("unapply MutabilityType")
     r
 
 end MutabilityType
