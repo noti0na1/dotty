@@ -330,6 +330,7 @@ private sealed trait YSettings:
   val Ycc: Setting[Boolean] = BooleanSetting("-Ycc", "Check captured references (warning: extremely experimental and unstable)")
   val YccDebug: Setting[Boolean] = BooleanSetting("-Ycc-debug", "Used in conjunction with -Ycc, debug info for captured references")
   val YccNoAbbrev: Setting[Boolean] = BooleanSetting("-Ycc-no-abbrev", "Used in conjunction with -Ycc, suppress type abbreviations")
+  val Ymut: Setting[Boolean] = BooleanSetting("-Ymut", "Check mutability (warning: extremely experimental and unstable)")
 
   /** Area-specific debug output */
   val YexplainLowlevel: Setting[Boolean] = BooleanSetting("-Yexplain-lowlevel", "When explaining type errors, show types at a lower level.")

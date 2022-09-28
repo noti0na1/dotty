@@ -15,7 +15,7 @@ object MutabilityOps:
     AnnotatedType(defn.NothingType, Annotation(defn.PolyreadAnnot))
 
   extension (annot: Annotation)
-    def toMutabilityQualifier(using Context): Option[MutabilityQualifier] =
+    def getMutabilityQualifier(using Context): Option[MutabilityQualifier] =
       val sym = annot.symbol
       if sym == defn.MutableAnnot then Some(Mutable)
       else if sym == defn.PolyreadAnnot then Some(Polyread)
@@ -23,8 +23,9 @@ object MutabilityOps:
       else None
 
   extension (tp: Type)
-    def computeMutability(using Context): MutabilityQualifier =
+    def computeMutability(default: MutabilityQualifier = Mutable)(using Context): MutabilityQualifier =
       def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match
+        // TODO: double check all types
         case MutabilityType(parent, mut) =>
           mut.max(recur(parent))
         case tp: AnnotatedType =>
@@ -36,16 +37,28 @@ object MutabilityOps:
         case tp: TypeRef =>
           recur(tp.info)
         case tp: TypeBounds =>
-          recur(tp.hi)
+          recur(tp.lo)
         case tp: SingletonType =>
           recur(tp.underlying)
-        case tp: ExprType =>
-          recur(tp.resType)
+        // case tp: ExprType =>
+        //   recur(tp.resType)
         case tp: MatchType =>
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
-          else Mutable
-        case _ => Mutable
+          else default
+        case _ => default
       recur(tp)
+
+  extension (sym: Symbol)
+    def findMutability(using Context): MutabilityQualifier =
+      def recur(annots: List[Annotation]): MutabilityQualifier =
+        annots match
+          case Nil => Mutable
+          case annot :: annots =>
+            // TODO: multiple mutability annotations?
+            annot.getMutabilityQualifier match
+              case Some(mut) => mut
+              case None => recur(annots)
+      recur(sym.annotations)
 
 

@@ -17,9 +17,6 @@ object MutabilityType:
     AnnotatedType(parent, Annotation(annot))
 
   def unapply(tp: AnnotatedType)(using Context): Option[(Type, MutabilityQualifier)] =
-    // if ctx.phase == Phases.checkMutabilityPhase then None else
-    val r = tp.annot.toMutabilityQualifier.map((tp.parent, _))
-    // println(s"unapply MutabilityType $tp -> $r")
-    r
+    tp.annot.getMutabilityQualifier.map((tp.parent, _))
 
 end MutabilityType

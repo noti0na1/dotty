@@ -137,12 +137,12 @@ abstract class Recheck extends Phase, SymTransformer:
     def recheckIdent(tree: Ident)(using Context): Type =
       tree.tpe
 
-    def recheckSelect(tree: Select)(using Context): Type =
+    def recheckSelect(tree: Select, pt: Type)(using Context): Type =
       val Select(qual, name) = tree
-      recheckSelection(tree, recheck(qual).widenIfUnstable, name)
+      recheckSelection(tree, recheck(qual).widenIfUnstable, name, pt)
 
     /** Keep the symbol of the `select` but re-infer its type */
-    def recheckSelection(tree: Select, qualType: Type, name: Name)(using Context) =
+    def recheckSelection(tree: Select, qualType: Type, name: Name, pt: Type)(using Context) =
       if name.is(OuterSelectName) then tree.tpe
       else
         //val pre = ta.maybeSkolemizePrefix(qualType, name)
@@ -232,7 +232,7 @@ abstract class Recheck extends Phase, SymTransformer:
       tptType
 
     def recheckAssign(tree: Assign)(using Context): Type =
-      val lhsType = recheck(tree.lhs)
+      val lhsType = recheck(tree.lhs, AssignProto)
       recheck(tree.rhs, lhsType.widen)
       defn.UnitType
 
@@ -344,7 +344,7 @@ abstract class Recheck extends Phase, SymTransformer:
         val sym = tree.symbol
         tree match
           case tree: Ident => recheckIdent(tree)
-          case tree: Select => recheckSelect(tree)
+          case tree: Select => recheckSelect(tree, pt)
           case tree: Bind => recheckBind(tree, pt)
           case tree: ValOrDefDef =>
             if tree.isEmpty then NoType

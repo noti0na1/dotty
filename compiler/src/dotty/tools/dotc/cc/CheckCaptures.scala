@@ -276,8 +276,8 @@ class CheckCaptures extends Recheck, SymTransformer:
      *  outcome of a `mightSubcapture` test. It picks `{f}` if this might subcapture Cr
      *  and Cr otherwise.
      */
-    override def recheckSelection(tree: Select, qualType: Type, name: Name)(using Context) = {
-      val selType = super.recheckSelection(tree, qualType, name)
+    override def recheckSelection(tree: Select, qualType: Type, name: Name, pt: Type)(using Context) = {
+      val selType = super.recheckSelection(tree, qualType, name, pt)
       val selCs = selType.widen.captureSet
       if selCs.isAlwaysEmpty || selType.widen.isBoxedCapturing || qualType.isBoxedCapturing then
         selType

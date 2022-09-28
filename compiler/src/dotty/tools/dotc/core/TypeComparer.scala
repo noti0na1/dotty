@@ -236,9 +236,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   override protected def isSub(tp1: Type, tp2: Type)(using Context): Boolean = isSubType(tp1, tp2)
 
   protected def checkMutability(tp1: Type, tp2: Type): Boolean = {
-    // if ctx.phase != Phases.checkMutabilityPhase then return true
-    tp1OuterMut = tp1.computeMutability
-    tp2OuterMut = tp2.computeMutability
+    if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then return true
+    tp1OuterMut = tp1.computeMutability()
+    tp2OuterMut = tp2.computeMutability()
     tp1OuterMut <= tp2OuterMut
   }
 
