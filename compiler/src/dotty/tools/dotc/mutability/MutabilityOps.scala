@@ -11,19 +11,19 @@ object MutabilityOps:
   def readonlyNothingType(using Context): AnnotatedType =
     AnnotatedType(defn.NothingType, Annotation(defn.ReadonlyAnnot))
 
-  def polyreadNothingType(using Context): AnnotatedType =
-    AnnotatedType(defn.NothingType, Annotation(defn.PolyreadAnnot))
+  // def polyreadNothingType(using Context): AnnotatedType =
+  //   AnnotatedType(defn.NothingType, Annotation(defn.PolyreadAnnot))
 
   extension (annot: Annotation)
     def getMutabilityQualifier(using Context): Option[MutabilityQualifier] =
       val sym = annot.symbol
       if sym == defn.MutableAnnot then Some(Mutable)
-      else if sym == defn.PolyreadAnnot then Some(Polyread)
+      // else if sym == defn.PolyreadAnnot then Some(Polyread)
       else if sym == defn.ReadonlyAnnot then Some(Readonly)
       else None
 
   extension (tp: Type)
-    def computeMutability(default: MutabilityQualifier = Mutable)(using Context): MutabilityQualifier =
+    def computeMutability(using Context): MutabilityQualifier =
       def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match
         // TODO: double check all types
         case MutabilityType(parent, mut) =>
@@ -45,8 +45,8 @@ object MutabilityOps:
         case tp: MatchType =>
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
-          else default
-        case _ => default
+          else Mutable
+        case _ => Mutable
       recur(tp)
 
   extension (sym: Symbol)

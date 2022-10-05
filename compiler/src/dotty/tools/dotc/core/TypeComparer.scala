@@ -237,8 +237,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   protected def checkMutability(tp1: Type, tp2: Type): Boolean = {
     if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then return true
-    tp1OuterMut = tp1.computeMutability()
-    tp2OuterMut = tp2.computeMutability()
+    tp1OuterMut = tp1.computeMutability
+    tp2OuterMut = tp2.computeMutability
     tp1OuterMut <= tp2OuterMut
   }
 

@@ -46,10 +46,15 @@ class CheckMutability extends Recheck:
   class MutabilityChecker(ictx: Context) extends Rechecker(ictx):
     import ast.tpd.*
 
+    override def keepType(tree: Tree) =
+      super.keepType(tree)
+      // remember the result of rechecking Select tree
+      || tree.isInstanceOf[Select]
+
     override def recheckSelection(tree: Select, qualType: Type, name: Name, pt: Type)(using Context) = {
       val selType = super.recheckSelection(tree, qualType, name, pt)
       val qual = tree.qualifier
-      var qualMut = qualType.computeMutability()
+      var qualMut = qualType.computeMutability
 
       qual match
         case qual: This =>
@@ -70,6 +75,8 @@ class CheckMutability extends Recheck:
             qualMut = enclosingMethod.findMutability
         case _ =>
 
+      // TODO: handle this type?
+
       // check assign `x.a = ???`
       // the mutability of x must be Mutable
       if pt == AssignProto then
@@ -86,9 +93,76 @@ class CheckMutability extends Recheck:
         if qualMut > mbrMut then
           report.error(i"calling $mbrMut $mbr on $qualMut $qual", tree.srcPos)
 
-      if !mbrSym.is(Method)
-        && selType.computeMutability(MutabilityQualifier.Polyread) == MutabilityQualifier.Polyread then
-          MutabilityType(selType, qualMut)
-      else selType
+      // If a field `x` has a polyread annotation at its type (most out),
+      // then the mutability of `a.x` is dependent on `a`.
+      if !mbrSym.is(Method) then selType.widen match {
+        case AnnotatedType(stp, annot)
+          if annot.symbol == defn.PolyreadAnnot
+            && qualMut != MutabilityQualifier.Mutable =>
+          // TODO: check polyread's argument
+          return MutabilityType(selType, qualMut)
+        case _ =>
+      }
+
+      selType
     }
+
+    override def recheckApply(tree: Apply, pt: Type)(using Context): Type =
+      recheck(tree.fun).widen match
+        case fntpe: MethodType =>
+          assert(fntpe.paramInfos.hasSameLengthAs(tree.args))
+          val formals =
+            if tree.symbol.is(JavaDefined) then mapJavaArgs(fntpe.paramInfos)
+            else fntpe.paramInfos
+
+          var hasPolyread = false
+          var refParam: ParamRef | Null = null
+          var refMut: MutabilityQualifier = MutabilityQualifier.Mutable
+          fntpe.resType match {
+            case AnnotatedType(_, annot) if annot.symbol == defn.PolyreadAnnot =>
+              hasPolyread = true
+              // TODO: check the polyread annotation's argument
+              annot.tree match
+                case Apply(_, List(id: Ident)) => id.tpe match
+                  case param: ParamRef =>
+                    refParam = param
+                  case _ =>
+                case Apply(_, List(_: This)) => tree.fun match
+                  case Select(qual, _) =>
+                    // it is ok to recheck qual here
+                    refMut = recheck(qual).computeMutability
+                  case _ =>
+                case _ =>
+            case _ =>
+          }
+
+
+          def recheckArgs(args: List[Tree], formals: List[Type], prefs: List[ParamRef]): List[Type] = args match
+            case arg :: args1 =>
+              val argType = recheck(arg, formals.head)
+              val pref = prefs.head
+              val formals1 =
+                if fntpe.isParamDependent
+                then formals.tail.map(_.substParam(pref, argType))
+                else formals.tail
+
+              if hasPolyread && refParam != null && pref == refParam then
+                // println(i"found param ref for $pref")
+                refMut = argType.computeMutability
+                refParam = null
+
+              argType :: recheckArgs(args1, formals1, prefs.tail)
+            case Nil =>
+              assert(formals.isEmpty)
+              Nil
+
+          val argTypes = recheckArgs(tree.args, formals, fntpe.paramRefs)
+          val appType = constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
+
+          if refMut != MutabilityQualifier.Mutable then
+            // println(i"found polyread $appType with $refMut")
+            MutabilityType(appType, refMut)
+          else
+            appType
+            //.showing(i"typed app $tree : $fntpe with ${tree.args}%, % : $argTypes%, % = $result")
 

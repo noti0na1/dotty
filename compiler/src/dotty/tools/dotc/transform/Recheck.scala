@@ -129,7 +129,7 @@ abstract class Recheck extends Phase, SymTransformer:
     def keepType(tree: Tree): Boolean = keepAllTypes
 
     /** Constant-folded rechecked type `tp` of tree `tree` */
-    private def constFold(tree: Tree, tp: Type)(using Context): Type =
+    protected def constFold(tree: Tree, tp: Type)(using Context): Type =
       val tree1 = tree.withType(tp)
       val tree2 = ConstFold(tree1)
       if tree2 ne tree1 then tree2.tpe else tp
@@ -186,7 +186,7 @@ abstract class Recheck extends Phase, SymTransformer:
     /** Assuming `formals` are parameters of a Java-defined method, remap Object
      *  to FromJavaObject since it got lost in ElimRepeated
      */
-    private def mapJavaArgs(formals: List[Type])(using Context): List[Type] =
+    protected def mapJavaArgs(formals: List[Type])(using Context): List[Type] =
       val tm = new TypeMap:
         def apply(t: Type) = t match
           case t: TypeRef if t.symbol == defn.ObjectClass => defn.FromJavaObjectType
