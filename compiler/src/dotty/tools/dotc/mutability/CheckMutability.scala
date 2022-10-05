@@ -136,7 +136,6 @@ class CheckMutability extends Recheck:
             case _ =>
           }
 
-
           def recheckArgs(args: List[Tree], formals: List[Type], prefs: List[ParamRef]): List[Type] = args match
             case arg :: args1 =>
               val argType = recheck(arg, formals.head)
@@ -146,8 +145,8 @@ class CheckMutability extends Recheck:
                 then formals.tail.map(_.substParam(pref, argType))
                 else formals.tail
 
+              // find the parameter and argument refered by polyread annotation
               if hasPolyread && refParam != null && pref == refParam then
-                // println(i"found param ref for $pref")
                 refMut = argType.computeMutability
                 refParam = null
 
@@ -159,8 +158,10 @@ class CheckMutability extends Recheck:
           val argTypes = recheckArgs(tree.args, formals, fntpe.paramRefs)
           val appType = constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
 
+          if hasPolyread && refParam != null then
+            report.error(i"cannot find the argument for polyread parameter $refParam", tree.srcPos)
+
           if refMut != MutabilityQualifier.Mutable then
-            // println(i"found polyread $appType with $refMut")
             MutabilityType(appType, refMut)
           else
             appType
