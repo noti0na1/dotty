@@ -10,6 +10,8 @@ import typer.ProtoTypes._
 import transform.{Recheck, PreRecheck}
 import Decorators._
 import MutabilityOps._
+import typer.RefChecks.checkAllOverrides
+import NamerOps.linkConstructorParams
 
 import annotation.tailrec
 
@@ -33,23 +35,18 @@ class CheckMutability extends Recheck:
   override def newRechecker()(using Context) = MutabilityChecker(ctx)
 
   override def run(using Context): Unit =
-    // checkOverrides.traverse(ctx.compilationUnit.tpdTree)
+    checkOverrides.traverse(ctx.compilationUnit.tpdTree)
     super.run
 
-  // def checkOverrides = new TreeTraverser:
-  //   def traverse(t: Tree)(using Context) =
-  //     t match
-  //       case t: Template => checkAllOverrides(ctx.owner.asClass)
-  //       case _ =>
-  //     traverseChildren(t)
+  def checkOverrides = new TreeTraverser:
+    def traverse(t: Tree)(using Context) =
+      t match
+        case t: Template => checkAllOverrides(ctx.owner.asClass)
+        case _ =>
+      traverseChildren(t)
 
   class MutabilityChecker(ictx: Context) extends Rechecker(ictx):
     import ast.tpd.*
-
-    override def keepType(tree: Tree) =
-      super.keepType(tree)
-      // remember the result of rechecking Select tree
-      || tree.isInstanceOf[Select]
 
     override def recheckSelection(tree: Select, qualType: Type, name: Name, pt: Type)(using Context) = {
       val selType = super.recheckSelection(tree, qualType, name, pt)
@@ -84,7 +81,7 @@ class CheckMutability extends Recheck:
         if qualMut > MutabilityQualifier.Mutable then
           report.error(i"trying to mutate a readonly field of $qual", tree.srcPos)
 
-      // check method calls `x.f(...)`
+      // check method selection `x.f(...)`
       // the mutability of x must be less than or equal to the mutability of f
       val mbr = qualType.findMember(name, qualType).suchThat(tree.symbol == _)
       val mbrSym = mbr.symbol
@@ -92,6 +89,18 @@ class CheckMutability extends Recheck:
         val mbrMut = mbrSym.findMutability
         if qualMut > mbrMut then
           report.error(i"calling $mbrMut $mbr on $qualMut $qual", tree.srcPos)
+        selType.widen match {
+          case fntpe: MethodType => fntpe.resType match {
+            case AnnotatedType(resType, annot) if annot.symbol == defn.PolyreadAnnot =>
+              annot.tree match {
+                case Apply(_, List(_: This)) =>
+                  // println("new result type: " + MutabilityType(fntpe.resType, qualMut))
+                  return fntpe.derivedLambdaType(resType = MutabilityType(resType, qualMut))
+                case _ => // TODO: same for default value?
+              }
+            case _ =>
+          }
+        }
 
       // If a field `x` has a polyread annotation at its type (most out),
       // then the mutability of `a.x` is dependent on `a`.
@@ -99,7 +108,7 @@ class CheckMutability extends Recheck:
         case AnnotatedType(stp, annot)
           if annot.symbol == defn.PolyreadAnnot
             && qualMut != MutabilityQualifier.Mutable =>
-          // TODO: check polyread's argument
+          // println("new sel type: " + MutabilityType(selType, qualMut))
           return MutabilityType(selType, qualMut)
         case _ =>
       }
@@ -107,7 +116,7 @@ class CheckMutability extends Recheck:
       selType
     }
 
-    override def recheckApply(tree: Apply, pt: Type)(using Context): Type =
+    override def recheckApply(tree: Apply, pt: Type)(using Context): Type = {
       recheck(tree.fun).widen match
         case fntpe: MethodType =>
           assert(fntpe.paramInfos.hasSameLengthAs(tree.args))
@@ -126,11 +135,6 @@ class CheckMutability extends Recheck:
                 case Apply(_, List(id: Ident)) => id.tpe match
                   case param: ParamRef =>
                     refParam = param
-                  case _ =>
-                case Apply(_, List(_: This)) => tree.fun match
-                  case Select(qual, _) =>
-                    // it is ok to recheck qual here
-                    refMut = recheck(qual).computeMutability
                   case _ =>
                 case _ =>
             case _ =>
@@ -162,8 +166,46 @@ class CheckMutability extends Recheck:
             report.error(i"cannot find the argument for polyread parameter $refParam", tree.srcPos)
 
           if refMut != MutabilityQualifier.Mutable then
-            MutabilityType(appType, refMut)
-          else
-            appType
+            appType match
+              case AnnotatedType(appType, annot) if annot.symbol == defn.PolyreadAnnot =>
+                MutabilityType(appType, refMut)
+          else appType
             //.showing(i"typed app $tree : $fntpe with ${tree.args}%, % : $argTypes%, % = $result")
+    }
 
+    private def insideViewOfPt(sym: Symbol, pt: Type, tree: Tree)(using Context): Type = pt match {
+      case AnnotatedType(pt, annot) if annot.symbol == defn.PolyreadAnnot =>
+        annot.tree match
+          case Apply(_, List(id: Ident)) =>
+            id.tpe match
+              case param: TermRef =>
+                // fields: the owner must be class
+                // TODO: check param is from sym
+                if param.symbol.owner != sym then
+                  report.error(i"the owner of $param must be $sym", tree.srcPos)
+                if param.underlying.computeMutability != MutabilityQualifier.Readonly then
+                  report.error(i"the mutability of $sym must be @Readonly", tree.srcPos)
+              case _ =>
+          case Apply(_, List(_: This)) =>
+            // methods: if the result type refer this, then the owener must be class
+            if !sym.owner.isClass then
+              report.error(i"the owner of $sym must be class", tree.srcPos)
+            if sym.findMutability != MutabilityQualifier.Readonly then
+              report.error(i"the mutability of $sym must be @Readonly", tree.srcPos)
+          case Apply(_, List(Select(id: Ident, _))) =>
+            // check default value
+            // difficult to do anything here, maybe add an attachment during desugar?
+        MutabilityType(pt, MutabilityQualifier.Readonly)
+      case pt => pt
+    }
+
+    override def recheckValDef(tree: ValDef, sym: Symbol)(using Context): Unit =
+      if !tree.rhs.isEmpty then recheck(tree.rhs, insideViewOfPt(sym, sym.info, tree))
+
+    override def recheckDefDef(tree: DefDef, sym: Symbol)(using Context): Unit =
+      val rhsCtx = linkConstructorParams(sym).withOwner(sym)
+      if !tree.rhs.isEmpty && !sym.isInlineMethod && !sym.isEffectivelyErased then
+        inContext(rhsCtx) {
+          val pt = insideViewOfPt(sym, recheck(tree.tpt), tree)
+          recheck(tree.rhs, pt)
+        }

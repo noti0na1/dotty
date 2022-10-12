@@ -880,12 +880,16 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case info1 @ TypeBounds(lo1, hi1) =>
             def compareGADT =
               tp1.symbol.onGadtBounds(gbounds1 =>
-                isSubTypeWhenFrozen(gbounds1.hi, tp2)
+                isSubTypeWhenFrozen(MutabilityType(gbounds1.hi, tp1OuterMut), MutabilityType(tp2, tp2OuterMut))
                 || narrowGADTBounds(tp1, tp2, approx, isUpper = true))
               && (tp2.isAny || GADTusage(tp1.symbol))
 
             (!caseLambda.exists || canWidenAbstract)
-                && isSubType(hi1.boxedIfTypeParam(tp1.symbol), tp2, approx.addLow) && (trustBounds || isSubType(lo1, tp2, approx.addLow))
+                && isSubType(
+                  MutabilityType(hi1.boxedIfTypeParam(tp1.symbol), tp1OuterMut),
+                  MutabilityType(tp2, tp2OuterMut),
+                  approx.addLow)
+                && (trustBounds || isSubType(MutabilityType(lo1, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow))
             || compareGADT
             || tryLiftedToThis1
           case _ =>
@@ -932,7 +936,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             case _ =>
               tp1w
 
-        comparePaths || isSubType(MutabilityType(tp1widened, tp1OuterMut), MutabilityType(tp2, tp1OuterMut), approx.addLow)
+        comparePaths || isSubType(MutabilityType(tp1widened, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow)
       case tp1: RefinedType =>
         isNewSubType(tp1.parent)
       case tp1: RecType =>
