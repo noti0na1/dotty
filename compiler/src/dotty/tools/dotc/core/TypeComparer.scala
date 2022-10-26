@@ -62,9 +62,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   /** Indicates whether the subtype check used GADT bounds */
   private var GADTused: Boolean = false
 
-  protected var tp1OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
+  protected var tp1OuterMut: Mutability = MutabilityQualifier.Mutable
 
-  protected var tp2OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
+  protected var tp2OuterMut: Mutability = MutabilityQualifier.Mutable
 
   protected var canWidenAbstract: Boolean = true
 
@@ -239,7 +239,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then return true
     tp1OuterMut = tp1.computeMutability
     tp2OuterMut = tp2.computeMutability
-    tp1OuterMut <= tp2OuterMut
+    tp1OuterMut.conforms(tp2OuterMut)
   }
 
   /** The inner loop of the isSubType comparison.

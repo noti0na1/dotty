@@ -6382,7 +6382,8 @@ object Types {
   private val keepAlways: AnnotatedType => Context ?=> Boolean = _ => true
   private val keepNever: AnnotatedType => Context ?=> Boolean = _ => false
   private val keepIfRefining: AnnotatedType => Context ?=> Boolean = _.isRefining
-  private val keepIfMutability: AnnotatedType => Context ?=> Boolean = _.annot.getMutabilityQualifier.isDefined
+  private val keepIfMutability: AnnotatedType => Context ?=> Boolean = tp =>
+    defn.MutAnnots.contains(tp.annot.symbol)
 
   val isBounds: Type => Boolean = _.isInstanceOf[TypeBounds]
 }

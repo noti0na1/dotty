@@ -1022,12 +1022,16 @@ class Definitions {
   @tu lazy val MutableAnnot: ClassSymbol = requiredClass("scala.annotation.mutable")
   @tu lazy val PolyreadAnnot: ClassSymbol = requiredClass("scala.annotation.polyread")
   @tu lazy val ReadonlyAnnot: ClassSymbol = requiredClass("scala.annotation.readonly")
+  @tu lazy val RefMutAnnot: ClassSymbol = requiredClass("scala.annotation.refmut")
 
   @tu lazy val JavaRepeatableAnnot: ClassSymbol = requiredClass("java.lang.annotation.Repeatable")
 
   // A list of meta-annotations that are relevant for fields and accessors
   @tu lazy val FieldAccessorMetaAnnots: Set[Symbol] =
     Set(FieldMetaAnnot, GetterMetaAnnot, ParamMetaAnnot, SetterMetaAnnot)
+
+  @tu lazy val MutAnnots: Set[Symbol] =
+    Set(MutableAnnot, PolyreadAnnot, ReadonlyAnnot, RefMutAnnot)
 
   // A list of annotations that are commonly used to indicate that a field/method argument or return
   // type is not null. These annotations are used by the nullification logic in JavaNullInterop to
