@@ -4,4 +4,4 @@ import java.lang.annotation.ElementType
 import java.lang.annotation.Target
 
 // @Target(Array(ElementType.TYPE, ElementType.METHOD))
-final class refmut(ref: Any = null) extends StaticAnnotation
+final class refmut(ref: Any*) extends StaticAnnotation

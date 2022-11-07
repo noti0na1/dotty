@@ -53,6 +53,8 @@ class CheckMutability extends Recheck:
       val qual = tree.qualifier
       var qualMut = qualType.computeMutability
 
+      println(s"recheckSelection: qualType: ${qualType.show}, qualMut: ${qualMut.show}")
+
       qual match
         case qual: This =>
           // when the selection is C.this.x,
@@ -78,7 +80,7 @@ class CheckMutability extends Recheck:
       // the mutability of x must be Mutable
       if pt == AssignProto then
         // println(i"check assign $tree, $qualType with $preQuli")
-        if !MutabilityQualifier.Mutable.conforms(qualMut) then
+        if !qualMut.conforms(MutableAnnotation) then
           report.error(i"the field of $qual must be mutable", tree.srcPos)
 
       // check method selection `x.f(...)`
@@ -87,8 +89,9 @@ class CheckMutability extends Recheck:
       val mbrSym = mbr.symbol
       if mbrSym.isRealMethod && !mbrSym.isStatic then
         val mbrMut = mbrSym.findMutability
-        if !mbrMut.conforms(qualMut)  then
+        if !qualMut.conforms(mbrMut)  then
           report.error(i"trying to call ${mbrMut.toString} $mbr on ${qualMut.toString} $qual, which violate the mutability", tree.srcPos)
+
         // TODO: polyread member
         // selType.widen match {
         //   case fntpe: MethodType => fntpe.resType match {
@@ -106,39 +109,46 @@ class CheckMutability extends Recheck:
       // If a field `x` has a polyread annotation at its type,
       // then the mutability of `a.x` is dependent on `a`.
       // TODO: in theory, it can refer to a term in the context as well
-      if !mbrSym.is(Method) then selType.widen match {
-        case AnnotatedType(stp, annot)
-          if annot.symbol == defn.PolyreadAnnot
-            && qualMut != MutabilityQualifier.Mutable =>
-          return MutabilityType(selType, qualMut)
-        case _ =>
-      }
+      // if !mbrSym.is(Method) then selType.widen match {
+      //   case MutabilityType(selType, _) =>
+      //     return MutabilityType(selType, qualMut)
+      //   case _ =>
+      // }
 
-      selType
+      def getOwnerClass(sym: Symbol): Symbol =
+        if sym.isClass then sym
+        else getOwnerClass(sym.owner)
+
+      if mbrSym.isConstructor then selType
+      else
+        // getOwnerClass(mbrSym).thisType.asInstanceOf[ThisType]
+        val r = selType.substRef(getOwnerClass(mbrSym).thisType.asInstanceOf[ThisType], qualMut)
+        println(s"recheckSelection subst: selType: ${selType.widen.show}, selMut: ${selType.computeMutability.show}, qualMut: ${qualMut.show}, new selType: ${r.show}")
+        r
     }
 
-    override def recheckApply(tree: Apply, pt: Type)(using Context): Type =
-      recheck(tree.fun).widen match
-        case fntpe: MethodType =>
-          assert(fntpe.paramInfos.hasSameLengthAs(tree.args))
-          val formals =
-            if tree.symbol.is(JavaDefined) then mapJavaArgs(fntpe.paramInfos)
-            else fntpe.paramInfos
-          var argsWithPolyMut = List()
-          def recheckArgs(args: List[Tree], formals: List[Type], prefs: List[ParamRef]): List[Type] = args match
-            case arg :: args1 =>
-              println(i"recheck arg $arg, ${formals.head}, ${prefs.head}")
-              val argType = recheck(arg, formals.head)
-              val formals1 =
-                if fntpe.isParamDependent
-                then formals.tail.map(_.substParam(prefs.head, argType))
-                else formals.tail
-              argType :: recheckArgs(args1, formals1, prefs.tail)
-            case Nil =>
-              assert(formals.isEmpty)
-              Nil
-          val argTypes = recheckArgs(tree.args, formals, fntpe.paramRefs)
-          constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
+    // override def recheckApply(tree: Apply, pt: Type)(using Context): Type =
+    //   recheck(tree.fun).widen match
+    //     case fntpe: MethodType =>
+    //       assert(fntpe.paramInfos.hasSameLengthAs(tree.args))
+    //       val formals =
+    //         if tree.symbol.is(JavaDefined) then mapJavaArgs(fntpe.paramInfos)
+    //         else fntpe.paramInfos
+    //       var argsWithPolyMut = List()
+    //       def recheckArgs(args: List[Tree], formals: List[Type], prefs: List[ParamRef]): List[Type] = args match
+    //         case arg :: args1 =>
+    //           println(i"recheck arg $arg, ${formals.head}, ${prefs.head}")
+    //           val argType = recheck(arg, formals.head)
+    //           val formals1 =
+    //             if fntpe.isParamDependent
+    //             then formals.tail.map(_.substParam(prefs.head, argType))
+    //             else formals.tail
+    //           argType :: recheckArgs(args1, formals1, prefs.tail)
+    //         case Nil =>
+    //           assert(formals.isEmpty)
+    //           Nil
+    //       val argTypes = recheckArgs(tree.args, formals, fntpe.paramRefs)
+    //       constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
             //.showing(i"typed app $tree : $fntpe with ${tree.args}%, % : $argTypes%, % = $result")
 
     // override def recheckApply(tree: Apply, pt: Type)(using Context): Type = {
