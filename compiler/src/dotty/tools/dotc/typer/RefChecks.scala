@@ -15,6 +15,7 @@ import config.Printers.{checks, noPrinter}
 import Decorators._
 import OverridingPairs.isOverridingPair
 import typer.ErrorReporting._
+import mutability.MutabilityOps._
 import config.Feature.{warnOnMigration, migrateTo3, sourceVersion}
 import config.SourceVersion.{`3.0`, `future`}
 import config.Printers.refcheck
@@ -353,6 +354,13 @@ object RefChecks {
         val (mtp, otp) = if compareTypes then (memberTp(self), otherTp(self)) else (NoType, NoType)
         OverrideError(core, self, member, other, mtp, otp)
 
+      def compatMutability: Boolean =
+        if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then true
+        else
+          val memberMut = member.findMutability
+          val otherMut = member.findMutability
+          memberMut == otherMut
+
       def compatTypes(memberTp: Type, otherTp: Type): Boolean =
         try
           isOverridingPair(member, memberTp, other, otherTp,
@@ -371,7 +379,10 @@ object RefChecks {
        *  Type members are always assumed to match.
        */
       def trueMatch: Boolean =
-        member.isType || withMode(Mode.IgnoreCaptures) {
+        val matchCtx = if ctx.phase == Phases.checkMutabilityPhase
+          then ctx.withPhase(Phases.refchecksPhase)
+          else ctx
+        member.isType || inContext(matchCtx)(withMode(Mode.IgnoreCaptures) {
           // `matches` does not perform box adaptation so the result here would be
           // spurious during capture checking.
           //
@@ -380,7 +391,7 @@ object RefChecks {
           // This should be safe since the compatibility under box adaptation is already
           // checked.
           memberTp(self).matches(otherTp(self))
-        }
+        })
 
       def emitOverrideError(fullmsg: Message) =
         if (!(hasErrors && member.is(Synthetic) && member.is(Module))) {
@@ -530,6 +541,8 @@ object RefChecks {
       else if (!compatTypes(memberTp(self), otherTp(self)) &&
                  !compatTypes(memberTp(upwardsSelf), otherTp(upwardsSelf)))
         overrideError("has incompatible type", compareTypes = true)
+      else if (!compatMutability)
+        overrideError("the receiver mutabilities are incompatible")
       else if (member.targetName != other.targetName)
         if (other.targetName != other.name)
           overrideError(i"needs to be declared with @targetName(${"\""}${other.targetName}${"\""}) so that external names match")

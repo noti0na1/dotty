@@ -38,6 +38,7 @@ import java.lang.ref.WeakReference
 import compiletime.uninitialized
 import cc.{CapturingType, CaptureSet, derivedCapturingType, isBoxedCapturing, EventuallyCapturingType, boxedUnlessFun}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
+import mutability.MutabilityOps._
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
@@ -1416,6 +1417,8 @@ object Types {
     /** Like `dealiasKeepAnnots`, but keeps only refining annotations */
     final def dealiasKeepRefiningAnnots(using Context): Type = dealias1(keepIfRefining, keepOpaques = false)
 
+    final def dealiasKeepMutabilityAnnots(using Context): Type = dealias1(keepIfMutability, keepOpaques = false)
+
     /** Follow non-opaque aliases and dereferences LazyRefs, annotated types and instantiated
      *  TypeVars until type is no longer alias type, annotated type, LazyRef,
      *  or instantiated type variable.
@@ -1460,6 +1463,9 @@ object Types {
 
     /** Perform successive widenings and dealiasings while rewrapping refining annotations, until none can be applied anymore */
     final def widenDealiasKeepRefiningAnnots(using Context): Type = widenDealias1(keepIfRefining)
+
+    /** Perform successive widenings and dealiasings while rewrapping mutability annotations, until none can be applied anymore */
+    final def widenDealiasKeepMutabilityAnnots(using Context): Type = widenDealias1(keepIfMutability)
 
     /** Widen from constant type to its underlying non-constant
      *  base type.
@@ -6438,6 +6444,7 @@ object Types {
   private val keepAlways: AnnotatedType => Context ?=> Boolean = _ => true
   private val keepNever: AnnotatedType => Context ?=> Boolean = _ => false
   private val keepIfRefining: AnnotatedType => Context ?=> Boolean = _.isRefining
+  private val keepIfMutability: AnnotatedType => Context ?=> Boolean = _.annot.getMutabilityQualifier.isDefined
 
   val isBounds: Type => Boolean = _.isInstanceOf[TypeBounds]
 }

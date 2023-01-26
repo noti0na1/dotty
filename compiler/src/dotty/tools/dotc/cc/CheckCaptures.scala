@@ -293,7 +293,7 @@ class CheckCaptures extends Recheck, SymTransformer:
           }
         case _ => denot
 
-      val selType = recheckSelection(tree, qualType, name, disambiguate)
+      val selType = recheckSelection(tree, qualType, name, disambiguate, false)
       val selCs = selType.widen.captureSet
       if selCs.isAlwaysEmpty || selType.widen.isBoxedCapturing || qualType.isBoxedCapturing then
         selType

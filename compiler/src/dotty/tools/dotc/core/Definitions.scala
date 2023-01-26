@@ -516,6 +516,7 @@ class Definitions {
   @tu lazy val ScalaStaticsModule: Symbol = requiredModule("scala.runtime.Statics")
     def staticsMethodRef(name: PreName): TermRef = ScalaStaticsModule.requiredMethodRef(name)
     def staticsMethod(name: PreName): TermSymbol = ScalaStaticsModule.requiredMethod(name)
+  @tu lazy val ScalaStaticsModuleClass: ClassSymbol = ScalaStaticsModule.moduleClass.asClass
 
   @tu lazy val DottyArraysModule: Symbol = requiredModule("scala.runtime.Arrays")
     @tu lazy val newGenericArrayMethod: TermSymbol = DottyArraysModule.requiredMethod("newGenericArray")
@@ -1044,6 +1045,9 @@ class Definitions {
   @tu lazy val RequiresCapabilityAnnot: ClassSymbol = requiredClass("scala.annotation.internal.requiresCapability")
   @tu lazy val RetainsAnnot: ClassSymbol = requiredClass("scala.annotation.retains")
   @tu lazy val RetainsByNameAnnot: ClassSymbol = requiredClass("scala.annotation.retainsByName")
+  @tu lazy val MutableAnnot: ClassSymbol = requiredClass("scala.annotation.mutable")
+  @tu lazy val PolyreadAnnot: ClassSymbol = requiredClass("scala.annotation.polyread")
+  @tu lazy val ReadonlyAnnot: ClassSymbol = requiredClass("scala.annotation.readonly")
 
   @tu lazy val JavaRepeatableAnnot: ClassSymbol = requiredClass("java.lang.annotation.Repeatable")
 
