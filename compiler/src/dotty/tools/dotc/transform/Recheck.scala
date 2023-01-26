@@ -155,7 +155,7 @@ abstract class Recheck extends Phase, SymTransformer:
      */
     def keepType(tree: Tree): Boolean = keepAllTypes
 
-    private val prevSelDenots = util.HashMap[NamedType, Denotation]()
+    protected val prevSelDenots = util.HashMap[NamedType, Denotation]()
 
     def reset()(using Context): Unit =
       for (ref, mbr) <- prevSelDenots.iterator do
@@ -189,7 +189,7 @@ abstract class Recheck extends Phase, SymTransformer:
         mbr
 
     def recheckSelection(tree: Select, qualType: Type, name: Name,
-        sharpen: Denotation => Denotation)(using Context): Type =
+        sharpen: Denotation => Denotation, isAssign: Boolean)(using Context): Type =
       if name.is(OuterSelectName) then tree.tpe
       else
         //val pre = ta.maybeSkolemizePrefix(qualType, name)
@@ -213,7 +213,7 @@ abstract class Recheck extends Phase, SymTransformer:
 
     /** Keep the symbol of the `select` but re-infer its type */
     def recheckSelection(tree: Select, qualType: Type, name: Name, pt: Type)(using Context): Type =
-      recheckSelection(tree, qualType, name, sharpen = identity[Denotation])
+      recheckSelection(tree, qualType, name, sharpen = identity[Denotation], isAssign = (pt == AssignProto))
 
     def recheckBind(tree: Bind, pt: Type)(using Context): Type = tree match
       case Bind(name, body) =>
@@ -249,7 +249,7 @@ abstract class Recheck extends Phase, SymTransformer:
     /** Assuming `formals` are parameters of a Java-defined method, remap Object
      *  to FromJavaObject since it got lost in ElimRepeated
      */
-    private def mapJavaArgs(formals: List[Type])(using Context): List[Type] =
+    protected def mapJavaArgs(formals: List[Type])(using Context): List[Type] =
       val tm = new TypeMap with IdempotentCaptRefMap:
         def apply(t: Type) = t match
           case t: TypeRef if t.symbol == defn.ObjectClass => defn.FromJavaObjectType
@@ -300,7 +300,7 @@ abstract class Recheck extends Phase, SymTransformer:
       tptType
 
     def recheckAssign(tree: Assign)(using Context): Type =
-      val lhsType = recheck(tree.lhs)
+      val lhsType = recheck(tree.lhs, AssignProto)
       recheck(tree.rhs, lhsType.widen)
       defn.UnitType
 
@@ -415,6 +415,12 @@ abstract class Recheck extends Phase, SymTransformer:
           case tree: DefDef => recheckDefDef(tree, sym)
       }
 
+    def recheckThis(tree: This, pt: Type)(using Context): Type =
+      tree.tpe
+
+    def recheckSuper(tree: Super, pt: Type)(using Context): Type =
+      tree.tpe
+
     /** Recheck tree without adapting it, returning its new type.
      *  @param tree        the original tree
      *  @param pt          the expected result type
@@ -447,7 +453,9 @@ abstract class Recheck extends Phase, SymTransformer:
       def recheckUnnamed(tree: Tree, pt: Type): Type = tree match
         case tree: Apply => recheckApply(tree, pt)
         case tree: TypeApply => recheckTypeApply(tree, pt)
-        case _: New | _: This | _: Super | _: Literal => tree.tpe
+        case _: New | _: Literal => tree.tpe
+        case tree: This => recheckThis(tree, pt)
+        case tree: Super => recheckSuper(tree, pt)
         case tree: Typed => recheckTyped(tree)
         case tree: Assign => recheckAssign(tree)
         case tree: Block => recheckBlock(tree, pt)
@@ -524,18 +532,18 @@ abstract class Recheck extends Phase, SymTransformer:
       case _ =>
         checkConformsExpr(tpe.widenExpr, pt.widenExpr, tree)
 
-    def checkConformsExpr(actual: Type, expected: Type, tree: Tree)(using Context): Unit =
-      //println(i"check conforms $actual <:< $expected")
-
-      def isCompatible(expected: Type): Boolean =
+    def isCompatible(actual: Type, expected: Type, tree: Tree)(using Context): Boolean =
         actual <:< expected
         || expected.isRepeatedParam
-            && isCompatible(expected.translateFromRepeated(toArray = tree.tpe.isRef(defn.ArrayClass)))
+            && isCompatible(actual, expected.translateFromRepeated(toArray = tree.tpe.isRef(defn.ArrayClass)), tree)
         || {
           val widened = widenSkolems(expected)
-          (widened ne expected) && isCompatible(widened)
+          (widened ne expected) && isCompatible(actual, widened, tree)
         }
-      if !isCompatible(expected) then
+
+    def checkConformsExpr(actual: Type, expected: Type, tree: Tree)(using Context): Unit =
+      //println(i"check conforms $actual <:< $expected")
+      if !isCompatible(actual, expected, tree) then
         recheckr.println(i"conforms failed for ${tree}: $actual vs $expected")
         err.typeMismatch(tree.withType(actual), expected)
       else if debugSuccesses then

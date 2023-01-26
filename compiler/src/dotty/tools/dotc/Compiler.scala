@@ -5,6 +5,7 @@ import core._
 import Contexts._
 import typer.{TyperPhase, RefChecks}
 import cc.CheckCaptures
+import mutability.CheckMutability
 import parsing.Parser
 import Phases.Phase
 import transform._
@@ -84,6 +85,8 @@ class Compiler {
     List(new TestRecheck) ::         // Test only: run rechecker, enabled under -Yrecheck-test
     List(new CheckCaptures.Pre) ::   // Preparations for check captures phase, enabled under captureChecking
     List(new CheckCaptures) ::       // Check captures, enabled under captureChecking
+    List(new CheckMutability.Pre) :: // Preparations for check mutability phase, enabled under -Ymut
+    List(new CheckMutability) ::     // Check mutability, enabled under -Ymut
     List(new ElimOpaque,             // Turn opaque into normal aliases
          new sjs.ExplicitJSClasses,  // Make all JS classes explicit (Scala.js only)
          new ExplicitOuter,          // Add accessors to outer classes from nested ones.

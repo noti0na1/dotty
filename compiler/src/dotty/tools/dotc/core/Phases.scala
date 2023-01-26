@@ -17,6 +17,7 @@ import parsing.Parser
 import printing.XprintMode
 import typer.{TyperPhase, RefChecks}
 import cc.CheckCaptures
+import mutability.CheckMutability
 import typer.ImportInfo.withRootImports
 import ast.{tpd, untpd}
 import scala.annotation.internal.sharable
@@ -228,6 +229,7 @@ object Phases {
     private var myFlattenPhase: Phase = _
     private var myGenBCodePhase: Phase = _
     private var myCheckCapturesPhase: Phase = _
+    private var myCheckMutabilityPhase: Phase = _
 
     final def parserPhase: Phase = myParserPhase
     final def typerPhase: Phase = myTyperPhase
@@ -252,6 +254,7 @@ object Phases {
     final def flattenPhase: Phase = myFlattenPhase
     final def genBCodePhase: Phase = myGenBCodePhase
     final def checkCapturesPhase: Phase = myCheckCapturesPhase
+    final def checkMutabilityPhase: Phase = myCheckMutabilityPhase
 
     private def setSpecificPhases() = {
       def phaseOfClass(pclass: Class[?]) = phases.find(pclass.isInstance).getOrElse(NoPhase)
@@ -279,6 +282,7 @@ object Phases {
       myGettersPhase = phaseOfClass(classOf[Getters])
       myGenBCodePhase = phaseOfClass(classOf[GenBCode])
       myCheckCapturesPhase = phaseOfClass(classOf[CheckCaptures])
+      myCheckMutabilityPhase = phaseOfClass(classOf[CheckMutability])
     }
 
     final def isAfterTyper(phase: Phase): Boolean = phase.id > typerPhase.id
@@ -463,6 +467,7 @@ object Phases {
   def flattenPhase(using Context): Phase                = ctx.base.flattenPhase
   def genBCodePhase(using Context): Phase               = ctx.base.genBCodePhase
   def checkCapturesPhase(using Context): Phase          = ctx.base.checkCapturesPhase
+  def checkMutabilityPhase(using Context): Phase        = ctx.base.checkMutabilityPhase
 
   def unfusedPhases(using Context): Array[Phase] = ctx.base.phases
 

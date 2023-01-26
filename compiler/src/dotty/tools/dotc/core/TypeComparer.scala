@@ -24,6 +24,8 @@ import typer.Applications.productSelectorTypes
 import reporting.trace
 import annotation.constructorOnly
 import cc.{CapturingType, derivedCapturingType, CaptureSet, stripCapturing, isBoxedCapturing, boxed, boxedUnlessFun, boxedIfTypeParam, isAlwaysPure}
+import mutability._
+import MutabilityOps._
 
 /** Provides methods to compare types.
  */
@@ -59,6 +61,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   /** Indicates whether the subtype check used GADT bounds */
   private var GADTused: Boolean = false
+
+  protected var tp1OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
+
+  protected var tp2OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
 
   private var myInstance: TypeComparer = this
   def currentInstance: TypeComparer = myInstance
@@ -205,19 +211,44 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       this.leftRoot = tp1
     }
     else this.approx = a
-    try recur(tp1, tp2)
+
+    val savedTp1OuterMut = this.tp1OuterMut
+    val savedTp2OuterMut = this.tp2OuterMut
+    this.tp1OuterMut = MutabilityQualifier.Mutable
+    this.tp2OuterMut = MutabilityQualifier.Mutable
+
+    try checkMutability(tp1, tp2) && recur(tp1, tp2)
     catch {
       case ex: Throwable => handleRecursive("subtype", i"$tp1 <:< $tp2", ex, weight = 2)
     }
     finally {
       this.approx = savedApprox
       this.leftRoot = savedLeftRoot
+      this.tp1OuterMut = savedTp1OuterMut
+      this.tp2OuterMut = savedTp2OuterMut
     }
   }
 
   def isSubType(tp1: Type, tp2: Type): Boolean = isSubType(tp1, tp2, ApproxState.Fresh)
 
   override protected def isSub(tp1: Type, tp2: Type)(using Context): Boolean = isSubType(tp1, tp2)
+
+  protected def checkMutability(tp1: Type, tp2: Type): Boolean = {
+    if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then return true
+
+    if tp2.isAny || tp2.isInstanceOf[ProtoType] then return true
+
+    tp1OuterMut = tp1.computeMutability
+    tp2OuterMut = tp2.computeMutability
+
+    // println(tp1.show)
+    // println(tp1OuterMut)
+    // println(tp2.show)
+    // println(tp2OuterMut)
+    // println()
+
+    tp1OuterMut <= tp2OuterMut
+  }
 
   /** The inner loop of the isSubType comparison.
    *  Recursive calls from recur should go to recur directly if the two types
@@ -885,12 +916,16 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case info1 @ TypeBounds(lo1, hi1) =>
             def compareGADT =
               tp1.symbol.onGadtBounds(gbounds1 =>
-                isSubTypeWhenFrozen(gbounds1.hi, tp2)
+                isSubTypeWhenFrozen(MutabilityType(gbounds1.hi, tp1OuterMut), MutabilityType(tp2, tp2OuterMut))
                 || narrowGADTBounds(tp1, tp2, approx, isUpper = true))
               && (tp2.isAny || GADTusage(tp1.symbol))
 
             (!caseLambda.exists || canWidenAbstract)
-                && isSubType(hi1.boxedIfTypeParam(tp1.symbol), tp2, approx.addLow) && (trustBounds || isSubType(lo1, tp2, approx.addLow))
+                && isSubType(
+                  MutabilityType(hi1.boxedIfTypeParam(tp1.symbol), tp1OuterMut),
+                  MutabilityType(tp2, tp2OuterMut),
+                  approx.addLow)
+                && (trustBounds || isSubType(MutabilityType(lo1, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow))
             || compareGADT
             || tryLiftedToThis1
           case _ =>
@@ -937,7 +972,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             case _ =>
               tp1w
 
-        comparePaths || isSubType(tp1widened, tp2, approx.addLow)
+        comparePaths || isSubType(MutabilityType(tp1widened, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow)
       case tp1: RefinedType =>
         isNewSubType(tp1.parent)
       case tp1: RecType =>
@@ -2552,7 +2587,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         parent1 & tp2
       else
         tp1.derivedCapturingType(parent1 & tp2, refs1)
-    case tp1: AnnotatedType if !tp1.isRefining =>
+    case tp1: AnnotatedType if !(tp1.isRefining  || tp1.annot.getMutabilityQualifier.isDefined) =>
       tp1.underlying & tp2
     case _ =>
       NoType
@@ -2576,7 +2611,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       }
     case tp1: TypeVar if tp1.isInstantiated =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
-    case tp1: AnnotatedType if !tp1.isRefining =>
+    case tp1: AnnotatedType
+      if !(tp1.isRefining || tp1.annot.getMutabilityQualifier.isDefined) =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
     case _ =>
       NoType
