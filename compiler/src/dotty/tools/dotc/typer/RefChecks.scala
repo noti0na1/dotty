@@ -358,7 +358,7 @@ object RefChecks {
         if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then true
         else
           val memberMut = member.findMutability
-          val otherMut = member.findMutability
+          val otherMut = other.findMutability
           memberMut == otherMut
 
       def compatTypes(memberTp: Type, otherTp: Type): Boolean =
@@ -542,7 +542,7 @@ object RefChecks {
                  !compatTypes(memberTp(upwardsSelf), otherTp(upwardsSelf)))
         overrideError("has incompatible type", compareTypes = true)
       else if (!compatMutability)
-        overrideError("the receiver mutabilities are incompatible")
+        overrideError(i"the receiver mutability is incompatible")
       else if (member.targetName != other.targetName)
         if (other.targetName != other.name)
           overrideError(i"needs to be declared with @targetName(${"\""}${other.targetName}${"\""}) so that external names match")

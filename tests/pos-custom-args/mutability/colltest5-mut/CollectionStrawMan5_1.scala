@@ -227,8 +227,8 @@ object CollectionStrawMan5 {
     override def isEmpty = false
     @readonly
     override def head = x
-    @readonly
-    def tail = next
+    @polyread
+    def tail: List[A] @polyread = next
   }
 
   object Cons {
@@ -240,8 +240,8 @@ object CollectionStrawMan5 {
     override def isEmpty = true
     @readonly
     override def head = ???
-    @readonly
-    def tail = ???
+    @polyread
+    def tail: List[Nothing] @polyread = ???
   }
 
   object List extends IterableFactory[List] {
@@ -256,6 +256,7 @@ object CollectionStrawMan5 {
   class ListBuffer[A] extends Seq[A] with SeqLike[A, ListBuffer] with Builder[A, List[A]] {
     private var first, last: List[A] = Nil
     private var aliased = false
+    @readonly
     def iterator = first.iterator
     @readonly
     def fromIterable[B](coll: Iterable[B] @readonly) = ListBuffer.fromIterable(coll)
@@ -452,17 +453,21 @@ object CollectionStrawMan5 {
 
   object View {
     def fromIterator[A](it: => Iterator[A]): View[A] = new View[A] {
+      @readonly
       def iterator = it
     }
     case object Empty extends View[Nothing] {
+      @readonly
       def iterator = Iterator.empty
       override def knownLength = 0
     }
     case class Elems[A](xs: A*) extends View[A] {
+      @readonly
       def iterator = Iterator(xs*)
       override def knownLength = xs.length
     }
     case class Filter[A](val underlying: (Iterable[A] @readonly), p: A => Boolean) extends View[A] {
+      @readonly
       def iterator = underlying.iterator.filter(p)
     }
     case class Partition[A](val underlying: (Iterable[A] @readonly), p: A => Boolean) {
@@ -470,21 +475,26 @@ object CollectionStrawMan5 {
       val right = Partitioned(this, false)
     }
     case class Partitioned[A](partition: Partition[A], cond: Boolean) extends View[A] {
+      @readonly
       def iterator = partition.underlying.iterator.filter(x => partition.p(x) == cond)
     }
     case class Drop[A](underlying: Iterable[A] @readonly, n: Int) extends View[A] {
+      @readonly
       def iterator = underlying.iterator.drop(n)
       override def knownLength =
         if (underlying.knownLength >= 0) underlying.knownLength - n max 0 else -1
     }
     case class Map[A, B](underlying: Iterable[A] @readonly, f: A => B) extends View[B] {
+      @readonly
       def iterator = underlying.iterator.map(f)
       override def knownLength = underlying.knownLength
     }
     case class FlatMap[A, B](underlying: Iterable[A] @readonly, f: A => (IterableOnce[B] @readonly)) extends View[B] {
+      @readonly
       def iterator = underlying.iterator.flatMap(f)
     }
     case class Concat[A](underlying: Iterable[A] @readonly, other: IterableOnce[A] @readonly) extends View[A] {
+      @readonly
       def iterator = underlying.iterator ++ other
       override def knownLength = other match {
         case other: Iterable[_] if underlying.knownLength >= 0 && other.knownLength >= 0 =>
@@ -494,6 +504,7 @@ object CollectionStrawMan5 {
       }
     }
     case class Zip[A, B](underlying: Iterable[A] @readonly, other: IterableOnce[B] @readonly) extends View[(A, B)] {
+      @readonly
       def iterator = underlying.iterator.zip(other)
       override def knownLength = other match {
         case other: Iterable[_] if underlying.knownLength >= 0 && other.knownLength >= 0 =>
