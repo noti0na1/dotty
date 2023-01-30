@@ -1,0 +1,8 @@
+import scala.annotation.{readonly, polyread, mutable}
+
+// TODO: need to handle AnyVal classes specially
+
+class S(s: String) extends AnyVal:
+  @readonly
+  def f: String = g // error
+  def g: String = f
