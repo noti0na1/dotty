@@ -52,13 +52,15 @@ class CheckMutability extends Recheck:
   class MutabilityChecker(ictx: Context) extends Rechecker(ictx):
     import ast.tpd.*
 
-    private def enforceApplyCheck(mbr: Symbol)(using Context): Boolean =
-      !(defn.pureMethods.contains(mbr)
-      || mbr.owner.isPrimitiveValueClass
-      || mbr.owner == defn.StringClass
-      || mbr.owner == defn.ScalaStaticsModuleClass
+    private def relaxApplyCheck(mbr: Symbol)(using Context): Boolean =
+      val owner = mbr.owner
+      defn.pureMethods.contains(mbr)
+      || owner.isPrimitiveValueClass
+      || owner == defn.StringClass
+      || owner == defn.ScalaStaticsModuleClass
+      || defn.isFunctionSymbol(owner)
       || mbr == defn.Any_asInstanceOf
-      || mbr == defn.Any_typeCast)
+      || mbr == defn.Any_typeCast
 
     private def isRegularMethod(sym: Symbol)(using Context): Boolean =
       sym.isRealMethod && !sym.isStatic && !sym.isConstructor
@@ -153,8 +155,8 @@ class CheckMutability extends Recheck:
           val mbrMut = mbrSym.findMutability
           if mbrMut == Polyread then
             return substPoly(selType.widen, qualMut)
-          else if (qualMut > mbrMut) && enforceApplyCheck(mbrSym) then
-            report.error(i"calling $mbrMut $mbr on $qualMut $qual", tree.srcPos)
+          else if (qualMut > mbrMut) && !relaxApplyCheck(mbrSym) then
+            report.error(i"calling $mbrMut $mbr ${mbrSym.owner} on $qualMut $qual", tree.srcPos)
 
         // When selecting on a field, the mutability will be at least the mutability of the qualifier.
         // For example, if `p` is readonly, then the type of `p.x` will be `p.x.type @readonly`.
@@ -178,7 +180,7 @@ class CheckMutability extends Recheck:
             case arg :: args1 =>
               val ftp = formals.head
               var recheckFtp = substPoly(ftp, Readonly)
-              if !enforceApplyCheck(tree.symbol) then
+              if relaxApplyCheck(tree.symbol) then
                 recheckFtp = MutabilityType(recheckFtp, Readonly)
               val argType = recheck(arg, recheckFtp)
               ftp match
