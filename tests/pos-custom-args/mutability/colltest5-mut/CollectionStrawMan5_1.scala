@@ -5,7 +5,8 @@ import Predef.{augmentString as _, wrapString as _, *}
 import scala.reflect.ClassTag
 import annotation.unchecked.uncheckedVariance
 import annotation.tailrec
-import scala.annotation.{readonly, polyread, mutable}
+import annotation.targetName
+import annotation.{readonly, polyread, mutable}
 
 
 /** A strawman architecture for new collections. It contains some
@@ -260,7 +261,9 @@ object CollectionStrawMan5 {
     def iterator = first.iterator
     @readonly
     def fromIterable[B](coll: Iterable[B] @readonly) = ListBuffer.fromIterable(coll)
+    @readonly
     def apply(i: Int) = first.apply(i)
+    @readonly
     def length = first.length
 
     private def copyElems(): Unit = {
@@ -283,7 +286,7 @@ object CollectionStrawMan5 {
       last = last1
       this
     }
-    @readonly
+
     override def toString: String =
       if (first.isEmpty) "ListBuffer()"
       else {
@@ -348,7 +351,6 @@ object CollectionStrawMan5 {
         (super.++(xs): ArrayBuffer[B] @polyread)
     }
 
-    @readonly
     override def toString = s"ArrayBuffer(${elems.asInstanceOf[Array[AnyRef]].slice(start, end).mkString(", ")})"
   }
 
@@ -369,7 +371,13 @@ object CollectionStrawMan5 {
       }
   }
 
-  class ArrayBufferView[A](val elems: Array[AnyRef] @readonly, val start: Int, val end: Int) extends RandomAccessView[A] {
+  class ArrayBufferView[A](val elems: Array[AnyRef] @readonly, val _start: Int, val _end: Int) extends RandomAccessView[A] {
+
+    @readonly
+    def start: Int = _start
+    @readonly
+    def end: Int = _end
+    @readonly
     def apply(n: Int) = elems.asInstanceOf[Array[AnyRef]].apply(start + n).asInstanceOf[A]
   }
 
@@ -416,8 +424,11 @@ object CollectionStrawMan5 {
   }
 
   case class StringView(s: String) extends RandomAccessView[Char] {
-    val start = 0
-    val end = s.length
+    @readonly
+    def start = 0
+    @readonly
+    def end = s.length
+    @readonly
     def apply(n: Int) = s.charAt(n)
   }
 
@@ -436,9 +447,13 @@ object CollectionStrawMan5 {
 
   /** View defined in terms of indexing a range */
   trait RandomAccessView[+A] extends View[A] {
+    @readonly
     def start: Int
+    @readonly
     def end: Int
+    @readonly
     def apply(i: Int): A
+    @readonly
     def iterator: Iterator[A] = new Iterator[A] {
       private var current = start
       def hasNext = current < end
@@ -448,6 +463,7 @@ object CollectionStrawMan5 {
         r
       }
     }
+    @readonly
     override def knownLength = end - start max 0
   }
 
@@ -459,14 +475,16 @@ object CollectionStrawMan5 {
     case object Empty extends View[Nothing] {
       @readonly
       def iterator = Iterator.empty
+      @readonly
       override def knownLength = 0
     }
     case class Elems[A](xs: A*) extends View[A] {
       @readonly
       def iterator = Iterator(xs*)
+      @readonly
       override def knownLength = xs.length
     }
-    case class Filter[A](val underlying: (Iterable[A] @readonly), p: A => Boolean) extends View[A] {
+    case class Filter[A](val underlying: Iterable[A] @readonly, p: A => Boolean) extends View[A] {
       @readonly
       def iterator = underlying.iterator.filter(p)
     }
@@ -481,12 +499,14 @@ object CollectionStrawMan5 {
     case class Drop[A](underlying: Iterable[A] @readonly, n: Int) extends View[A] {
       @readonly
       def iterator = underlying.iterator.drop(n)
+      @readonly
       override def knownLength =
         if (underlying.knownLength >= 0) underlying.knownLength - n max 0 else -1
     }
     case class Map[A, B](underlying: Iterable[A] @readonly, f: A => B) extends View[B] {
       @readonly
       def iterator = underlying.iterator.map(f)
+      @readonly
       override def knownLength = underlying.knownLength
     }
     case class FlatMap[A, B](underlying: Iterable[A] @readonly, f: A => (IterableOnce[B] @readonly)) extends View[B] {
@@ -496,6 +516,7 @@ object CollectionStrawMan5 {
     case class Concat[A](underlying: Iterable[A] @readonly, other: IterableOnce[A] @readonly) extends View[A] {
       @readonly
       def iterator = underlying.iterator ++ other
+      @readonly
       override def knownLength = other match {
         case other: Iterable[_] if underlying.knownLength >= 0 && other.knownLength >= 0 =>
           underlying.knownLength + other.knownLength
@@ -506,6 +527,7 @@ object CollectionStrawMan5 {
     case class Zip[A, B](underlying: Iterable[A] @readonly, other: IterableOnce[B] @readonly) extends View[(A, B)] {
       @readonly
       def iterator = underlying.iterator.zip(other)
+      @readonly
       override def knownLength = other match {
         case other: Iterable[_] if underlying.knownLength >= 0 && other.knownLength >= 0 =>
           underlying.knownLength min other.knownLength
@@ -518,7 +540,7 @@ object CollectionStrawMan5 {
 /* ---------- Iterators ---------------------------------------------------*/
 
   /** A core Iterator class */
-  trait Iterator[+A] extends IterableOnce[A] { self =>
+  trait Iterator[+A] { self =>
     def hasNext: Boolean
     def next(): A
     def iterator = this
@@ -563,22 +585,30 @@ object CollectionStrawMan5 {
       def next() = f(self.next())
     }
 
-    def flatMap[B](f: A => (IterableOnce[B] @readonly)): Iterator[B] = new Iterator[B] {
+    def flatMap[B](f: A => (IterableOnce[B] @readonly)): Iterator[B] =
+      flatMap(f(_).iterator)
+
+    @targetName("flatMapIterator")
+    def flatMap[B](f: A => Iterator[B]): Iterator[B] = new Iterator[B] {
       private var myCurrent: Iterator[B] = Iterator.empty
       private def current = {
         while (!myCurrent.hasNext && self.hasNext)
-          myCurrent = f(self.next()).iterator
+          myCurrent = f(self.next())
         myCurrent
       }
       def hasNext = current.hasNext
       def next() = current.next()
     }
-    def ++[B >: A](xs: IterableOnce[B] @readonly): Iterator[B] = new Iterator[B] {
+
+    def ++[B >: A](xs: IterableOnce[B] @readonly): Iterator[B] =
+      ++(xs.iterator)
+
+    def ++[B >: A](xs: Iterator[B]): Iterator[B] = new Iterator[B] {
       private var myCurrent: Iterator[B] = self
       private var first = true
       private def current = {
         if (!myCurrent.hasNext && first) {
-          myCurrent = xs.iterator
+          myCurrent = xs
           first = false
         }
         myCurrent
@@ -594,8 +624,12 @@ object CollectionStrawMan5 {
       }
       this
     }
-    def zip[B](that: IterableOnce[B]  @readonly): Iterator[(A, B)] = new Iterator[(A, B)] {
-      val thatIterator = that.iterator
+
+    def zip[B](that: IterableOnce[B] @readonly): Iterator[(A, B)] =
+      zip(that.iterator)
+
+    def zip[B](that: Iterator[B]): Iterator[(A, B)] = new Iterator[(A, B)] {
+      val thatIterator = that
       def hasNext = self.hasNext && thatIterator.hasNext
       def next() = (self.next(), thatIterator.next())
     }
@@ -607,8 +641,11 @@ object CollectionStrawMan5 {
       def next() = throw new NoSuchElementException("next on empty iterator")
     }
     def apply[A](xs: A*): Iterator[A] = new RandomAccessView[A] {
-      val start = 0
-      val end = xs.length
+      @readonly
+      def start = 0
+      @readonly
+      def end = xs.length
+      @readonly
       def apply(n: Int) = xs(n)
     }.iterator
   }
