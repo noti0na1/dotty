@@ -100,4 +100,5 @@ class CommunityBuildTestC:
   @Test def utest = projects.utest.run()
   @Test def verify = projects.verify.run()
   @Test def xmlInterpolator = projects.xmlInterpolator.run()
+  @Test def cs241e = projects.cs241e.run()
 end CommunityBuildTestC

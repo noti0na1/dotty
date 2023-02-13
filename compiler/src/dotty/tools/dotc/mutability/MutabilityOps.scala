@@ -3,8 +3,8 @@ package dotc
 package mutability
 
 import core.*
-import Types.*, Symbols.*, Contexts.*, Annotations.*, MutabilityQualifier.*
-import Ordering.Implicits._
+import Types.*, Symbols.*, Contexts.*, Annotations.*, MutabilityQualifier.*, Decorators.*
+import Ordering.Implicits.*
 
 object MutabilityOps:
 
@@ -17,7 +17,8 @@ object MutabilityOps:
       else None
 
   extension (tp: Type)
-    def computeMutability(using Context): MutabilityQualifier =
+
+    def computeMutability(isHigher: Boolean)(using Context): MutabilityQualifier =
       def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match
         // TODO: double check all types
         case MutabilityType(parent, mut) =>
@@ -31,11 +32,7 @@ object MutabilityOps:
         case tp: TypeRef =>
           recur(tp.info)
         case tp: TypeBounds =>
-          // val lom = tp.lo.computeMutability
-          // val him = tp.hi.computeMutability
-          // if lom == him then lom
-          // else Polyread
-          tp.hi.computeMutability
+          if isHigher then recur(tp.hi) else recur(tp.lo)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
@@ -44,8 +41,13 @@ object MutabilityOps:
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
           else Mutable
-        case _ => Mutable
-      recur(tp)
+        case tp: ClassInfo =>
+          if tp.classSymbol.isReadonlyClass then Readonly else Mutable
+        case _ =>
+          Mutable
+      val r = recur(tp)
+      // println(i"computeMutability($tp, $isHigher) = $r")
+      r
 
     def stripMutability(using Context): Type = tp match
       case MutabilityType(parent, _) => parent.stripMutability
@@ -54,6 +56,7 @@ object MutabilityOps:
       case _ => tp
 
   extension (sym: Symbol)
+
     def findMutability(using Context): MutabilityQualifier =
       def recur(annots: List[Annotation]): MutabilityQualifier =
         annots match
@@ -63,6 +66,16 @@ object MutabilityOps:
             annot.getMutabilityQualifier match
               case Some(mut) => mut
               case None => recur(annots)
-      recur(sym.annotations)
+      if !sym.isClass && sym.owner.isReadonlyClass
+        || defn.pureMethods.contains(sym)
+      then Readonly
+      else recur(sym.annotations)
+
+    def isReadonlyClass(using Context): Boolean =
+      sym.isValueClass
+      || sym == defn.StringClass
+      || sym == defn.ScalaStaticsModuleClass
+      || defn.isFunctionSymbol(sym)
+      || sym.isClass && sym.findMutability == Readonly
 
 

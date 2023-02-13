@@ -5,16 +5,16 @@ package mutability
 import core.*
 import Symbols.*, Contexts.*, Types.*, ContextOps.*, Decorators.*, SymDenotations.*
 import NameKinds.*, Denotations.Denotation
-import Names._, Definitions._, Symbols._
+import Names.*, Definitions.*, Symbols.*
 import Flags.{Method, JavaDefined}
 import NamerOps.linkConstructorParams
-import typer.ProtoTypes._
+import typer.ProtoTypes.*
 import typer.RefChecks.checkAllOverrides
 import transform.{Recheck, PreRecheck}
 import transform.SymUtils.*
-import Ordering.Implicits._
-import MutabilityOps._
-import MutabilityQualifier._
+import Ordering.Implicits.*
+import MutabilityOps.*
+import MutabilityQualifier.*
 
 import annotation.tailrec
 import dotty.tools.dotc.core.Types.ExprType
@@ -54,8 +54,9 @@ class CheckMutability extends Recheck:
 
     private def relaxApplyCheck(mbr: Symbol)(using Context): Boolean =
       val owner = mbr.owner
-      defn.pureMethods.contains(mbr)
-      || owner.isPrimitiveValueClass
+      mbr.is(Flags.Synthetic)
+      || defn.pureMethods.contains(mbr)
+      || owner.isValueClass
       || owner == defn.StringClass
       || owner == defn.ScalaStaticsModuleClass
       || defn.isFunctionSymbol(owner)
@@ -108,6 +109,26 @@ class CheckMutability extends Recheck:
 
       search(ctx.owner)
 
+    override def recheckClassDef(tree: TypeDef, impl: Template, sym: ClassSymbol)(using Context): Type =
+      if sym.findMutability == Readonly then
+        sym.info.parents.foreach {
+          case parent: TypeRef =>
+            if !(parent.symbol == defn.ObjectClass || parent.symbol.isReadonlyClass) then
+              report.error(i"Non-readonly parent $parent is not allowed in readonly class", tree.srcPos)
+          case _ =>
+        }
+      super.recheckClassDef(tree, impl, sym)
+
+    // TODO: check type bounds
+
+    override def recheckValDef(tree: ValDef, sym: Symbol)(using Context): Unit =
+      if !sym.is(Flags.Synthetic) && sym.owner.isReadonlyClass then
+        if sym.is(Flags.Mutable) then
+          report.error(i"A readonly class is not allow to have mutable field $sym", tree.srcPos)
+        if sym.info.computeMutability(isHigher = false) < Readonly then
+          report.error(i"Non-readonly field $sym is not allowed in readonly class", tree.srcPos)
+      super.recheckValDef(tree, sym)
+
     override def recheckThis(tree: This, pt: Type)(using Context): Type =
       val thisTp = super.recheckThis(tree, pt)
       if pt == AnySelectionProto then thisTp
@@ -142,7 +163,7 @@ class CheckMutability extends Recheck:
         val qual = tree.qualifier
         val qualMut = qual match
           case _: This | _: Super => getMutabilityFromEnclosing(qual)
-          case _ => qualType.computeMutability
+          case _ => qualType.computeMutability(isHigher = true)
 
         // Check assign `x.a = ???`,
         // the mutability of `x` must be `Mutable`.
@@ -160,7 +181,7 @@ class CheckMutability extends Recheck:
 
         // When selecting on a field, the mutability will be at least the mutability of the qualifier.
         // For example, if `p` is readonly, then the type of `p.x` will be `p.x.type @readonly`.
-        if mbrSym.isField then
+        if mbrSym.isField && !mbrSym.owner.isReadonlyClass then
           MutabilityType(selType, qualMut)
         else
           selType
@@ -185,7 +206,7 @@ class CheckMutability extends Recheck:
               val argType = recheck(arg, recheckFtp)
               ftp match
                 case MutabilityType(_, Polyread) =>
-                  polyMut = polyMut.max(argType.computeMutability)
+                  polyMut = polyMut.max(argType.computeMutability(isHigher = true))
                 case _ =>
               val formals1 =
                 if fntpe.isParamDependent
@@ -199,8 +220,5 @@ class CheckMutability extends Recheck:
           val resTp = constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
           substPoly(resTp, polyMut)
 
-    override def isCompatible(actual: Type, expected: Type, tree: Tree)(using Context): Boolean =
-      super.isCompatible(actual, expected, tree)
-      || (expected <:< defn.AnyValType
-        && super.isCompatible(actual, MutabilityType(expected, Readonly), tree))
+
 

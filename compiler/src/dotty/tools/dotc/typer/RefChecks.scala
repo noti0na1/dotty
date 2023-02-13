@@ -355,11 +355,16 @@ object RefChecks {
         OverrideError(core, self, member, other, mtp, otp)
 
       def compatMutability: Boolean =
-        if !ctx.settings.Ymut.value || ctx.phase != Phases.checkMutabilityPhase then true
-        else
-          val memberMut = member.findMutability
-          val otherMut = other.findMutability
-          memberMut == otherMut
+        // TODO: FIX
+        true
+        // if !ctx.settings.Ymut.value
+        //   || ctx.phase != Phases.checkMutabilityPhase
+        //   || defn.caseClassSynthesized.contains(other)
+        // then true
+        // else
+        //   val memberMut = member.findMutability
+        //   val otherMut = other.findMutability
+        //   memberMut == otherMut
 
       def compatTypes(memberTp: Type, otherTp: Type): Boolean =
         try
