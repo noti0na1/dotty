@@ -238,8 +238,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
     if tp2.isAny || tp2.isInstanceOf[ProtoType] then return true
 
-    tp1OuterMut = tp1.computeMutability
-    tp2OuterMut = tp2.computeMutability
+    tp1OuterMut = tp1.computeMutability(isHigher = true)
+    tp2OuterMut = tp2.computeMutability(isHigher = false)
 
     // println(tp1.show)
     // println(tp1OuterMut)

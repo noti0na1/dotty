@@ -6,7 +6,7 @@ import scala.reflect.ClassTag
 import annotation.unchecked.uncheckedVariance
 import annotation.tailrec
 import annotation.targetName
-import annotation.{readonly, polyread, mutable}
+import scala.annotation.{readonly, polyread, mutable}
 
 
 /** A strawman architecture for new collections. It contains some
@@ -543,6 +543,7 @@ object CollectionStrawMan5 {
   trait Iterator[+A] { self =>
     def hasNext: Boolean
     def next(): A
+
     def iterator = this
     def foldLeft[B](z: B)(op: (B, A) => B): B =
       if (hasNext) foldLeft(op(z, next()))(op) else z

@@ -766,6 +766,13 @@ object projects:
     dependencies = List(utest, scalacheck)
   )
 
+  lazy val cs241e = SbtCommunityProject(
+    project           = "cs241e-solu",
+    sbtTestCommand    = "compile; run",
+    sbtPublishCommand = "publishLocal",
+    // dependencies      = List(scalatest),
+  )
+
 end projects
 
 def allProjects = List(
@@ -848,6 +855,7 @@ def allProjects = List(
   projects.spire,
   projects.http4s,
   projects.parboiled2,
+  projects.cs241e,
 )
 
 lazy val projectMap = allProjects.groupBy(_.project)
