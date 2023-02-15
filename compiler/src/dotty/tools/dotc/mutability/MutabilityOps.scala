@@ -73,8 +73,12 @@ object MutabilityOps:
 
     def isReadonlyClass(using Context): Boolean =
       sym.isValueClass
-      || sym == defn.StringClass
+      || sym == defn.AnyClass
+      || sym == defn.EqualsClass
+      || sym == defn.ProductClass
+      || sym == defn.SerializableClass
       || sym == defn.ScalaStaticsModuleClass
+      || sym == defn.StringClass
       || defn.isFunctionSymbol(sym)
       || sym.isClass && sym.findMutability == Readonly
 
