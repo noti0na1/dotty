@@ -73,7 +73,6 @@ object MutabilityOps:
 
     def isReadonlyClass(using Context): Boolean =
       sym.isValueClass
-      || sym == defn.AnyClass
       || sym == defn.EqualsClass
       || sym == defn.ProductClass
       || sym == defn.SerializableClass
