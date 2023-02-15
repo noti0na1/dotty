@@ -900,6 +900,8 @@ class Definitions {
 
   @tu lazy val MacroAnnotationClass: ClassSymbol = requiredClass("scala.annotation.MacroAnnotation")
 
+  @tu lazy val EqualsClass: ClassSymbol = requiredClass("scala.Equals")
+
   @tu lazy val CanEqualClass: ClassSymbol = getClassIfDefined("scala.Eql").orElse(requiredClass("scala.CanEqual")).asClass
     def CanEqual_canEqualAny(using Context): TermSymbol =
       val methodName = if CanEqualClass.name == tpnme.Eql then nme.eqlAny else nme.canEqualAny

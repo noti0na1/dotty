@@ -355,16 +355,15 @@ object RefChecks {
         OverrideError(core, self, member, other, mtp, otp)
 
       def compatMutability: Boolean =
-        // TODO: FIX
-        true
-        // if !ctx.settings.Ymut.value
-        //   || ctx.phase != Phases.checkMutabilityPhase
-        //   || defn.caseClassSynthesized.contains(other)
-        // then true
-        // else
-        //   val memberMut = member.findMutability
-        //   val otherMut = other.findMutability
-        //   memberMut == otherMut
+        if !ctx.settings.Ymut.value
+          || ctx.phase != Phases.checkMutabilityPhase
+          || other.owner.isReadonlyClass
+          || defn.caseClassSynthesized.contains(other)
+        then true
+        else
+          val memberMut = member.findMutability
+          val otherMut = other.findMutability
+          memberMut == otherMut
 
       def compatTypes(memberTp: Type, otherTp: Type): Boolean =
         try
@@ -545,6 +544,7 @@ object RefChecks {
         overrideError("cannot be used here - only Scala-2 macros can override Scala-2 macros")
       else if (!compatTypes(memberTp(self), otherTp(self)) &&
                  !compatTypes(memberTp(upwardsSelf), otherTp(upwardsSelf)))
+        println(s"incompatible:: memberTp = ${memberTp(self)}, otherTp = ${otherTp(self)}")
         overrideError("has incompatible type", compareTypes = true)
       else if (!compatMutability)
         overrideError(i"the receiver mutability is incompatible")
