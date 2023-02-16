@@ -52,17 +52,6 @@ class CheckMutability extends Recheck:
   class MutabilityChecker(ictx: Context) extends Rechecker(ictx):
     import ast.tpd.*
 
-    private def relaxApplyCheck(mbr: Symbol)(using Context): Boolean =
-      val owner = mbr.owner
-      mbr.is(Flags.Synthetic)
-      || defn.pureMethods.contains(mbr)
-      || owner.isValueClass
-      || owner == defn.StringClass
-      || owner == defn.ScalaStaticsModuleClass
-      || defn.isFunctionSymbol(owner)
-      || mbr == defn.Any_asInstanceOf
-      || mbr == defn.Any_typeCast
-
     private def isRegularMethod(sym: Symbol)(using Context): Boolean =
       sym.isRealMethod && !sym.isStatic && !sym.isConstructor
 
@@ -176,7 +165,7 @@ class CheckMutability extends Recheck:
           val mbrMut = mbrSym.findMutability
           if mbrMut == Polyread then
             return substPoly(selType.widen, qualMut)
-          else if (qualMut > mbrMut) && !relaxApplyCheck(mbrSym) then
+          else if (qualMut > mbrMut) && !mbrSym.relaxApplyCheck then
             report.error(i"calling $mbrMut $mbr ${mbrSym.owner} on $qualMut $qual", tree.srcPos)
 
         // When selecting on a field, the mutability will be at least the mutability of the qualifier.
@@ -201,7 +190,7 @@ class CheckMutability extends Recheck:
             case arg :: args1 =>
               val ftp = formals.head
               var recheckFtp = substPoly(ftp, Readonly)
-              if relaxApplyCheck(tree.symbol) then
+              if tree.symbol.relaxApplyCheck then
                 recheckFtp = MutabilityType(recheckFtp, Readonly)
               val argType = recheck(arg, recheckFtp)
               ftp match
