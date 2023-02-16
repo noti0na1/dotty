@@ -73,12 +73,31 @@ object MutabilityOps:
 
     def isReadonlyClass(using Context): Boolean =
       sym.isValueClass
+      || sym == defn.StringClass
       || sym == defn.EqualsClass
       || sym == defn.ProductClass
       || sym == defn.SerializableClass
+      || sym == defn.ThrowableClass
+      || sym == defn.ExceptionClass
+      || sym == defn.RuntimeExceptionClass
       || sym == defn.ScalaStaticsModuleClass
-      || sym == defn.StringClass
+      || sym == defn.ConversionClass
       || defn.isFunctionSymbol(sym)
       || sym.isClass && sym.findMutability == Readonly
+
+    def relaxApplyCheck(using Context): Boolean =
+      val owner = sym.owner
+      sym.is(Flags.Synthetic)
+      || defn.pureMethods.contains(sym)
+      || owner == defn.ScalaStaticsModuleClass
+      || owner == defn.OptionClass
+      || sym == defn.Any_asInstanceOf
+      || sym == defn.Any_typeCast
+      || sym == defn.Array_apply
+      || sym == defn.Array_length
+      // uncommant the following line if needed
+      // || owner == defn.IterableOpsClass
+      // || owner == defn.SeqOpsClass
+      // || owner == defn.IntegralProxyClass
 
 
