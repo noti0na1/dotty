@@ -916,6 +916,7 @@ class Definitions {
   @tu lazy val FromDigits_DecimalClass: ClassSymbol   = requiredClass("scala.util.FromDigits.Decimal")
   @tu lazy val FromDigits_FloatingClass: ClassSymbol  = requiredClass("scala.util.FromDigits.Floating")
 
+  @tu lazy val CharSequenceClass: ClassSymbol = requiredClass("java.lang.CharSequence")
   @tu lazy val IterableOpsClass: ClassSymbol = requiredClass("scala.collection.IterableOps")
   @tu lazy val SeqOpsClass: ClassSymbol = requiredClass("scala.collection.SeqOps")
   @tu lazy val IntegralProxyClass: ClassSymbol = requiredClass("scala.runtime.IntegralProxy")

@@ -73,6 +73,7 @@ object MutabilityOps:
 
     def isReadonlyClass(using Context): Boolean =
       sym.isValueClass
+      || sym == defn.CharSequenceClass
       || sym == defn.StringClass
       || sym == defn.EqualsClass
       || sym == defn.ProductClass
