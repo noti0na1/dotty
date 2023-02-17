@@ -87,6 +87,7 @@ object MutabilityOps:
       || sym == defn.RuntimeExceptionClass
       || sym == defn.ScalaStaticsModuleClass
       || sym == defn.ConversionClass
+      || sym == defn.Mirror_SingletonClass
       || defn.isFunctionSymbol(sym)
       || sym.isClass && sym.findMutability == Readonly
 
