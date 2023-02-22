@@ -19,8 +19,7 @@ object MutabilityOps:
   extension (tp: Type)
 
     def computeMutability(isHigher: Boolean)(using Context): MutabilityQualifier =
-      def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match
-        // TODO: double check all types
+      def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match\
         case MutabilityType(parent, mut) =>
           mut.max(recur(parent))
         case tp: AnnotatedType =>
@@ -32,7 +31,11 @@ object MutabilityOps:
         case tp: TypeRef =>
           recur(tp.info)
         case tp: TypeBounds =>
-          if isHigher then recur(tp.hi) else recur(tp.lo)
+          // TODO: fix this! The way we handle type bounds is not correct.
+          // Consider a type parameter `T >: A <: B` where `A` is `mutable` and `B` is  `readonly`,
+          // `T <:< T` will fail.
+          // if isHigher then recur(tp.hi) else recur(tp.lo)
+          recur(tp.hi)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
@@ -75,6 +78,7 @@ object MutabilityOps:
       sym.isValueClass
       || sym == defn.CharSequenceClass
       || sym == defn.StringClass
+      || sym == defn.Mirror_SingletonClass
       || sym == defn.EqualsClass
       || sym == defn.ProductClass
       || sym == defn.SerializableClass
@@ -97,8 +101,8 @@ object MutabilityOps:
       || sym == defn.Array_apply
       || sym == defn.Array_length
       // uncommant the following line if needed
-      // || owner == defn.IterableOpsClass
-      // || owner == defn.SeqOpsClass
-      // || owner == defn.IntegralProxyClass
+      || owner == defn.IterableOpsClass
+      || owner == defn.SeqOpsClass
+      || owner == defn.IntegralProxyClass
 
 
