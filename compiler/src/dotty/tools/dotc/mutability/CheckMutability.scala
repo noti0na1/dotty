@@ -14,7 +14,7 @@ import transform.{Recheck, PreRecheck}
 import transform.SymUtils.*
 import Ordering.Implicits.*
 import MutabilityOps.*
-import MutabilityQualifier.*
+import Mutability.*
 
 import annotation.tailrec
 import dotty.tools.dotc.core.Types.ExprType
@@ -56,7 +56,7 @@ class CheckMutability extends Recheck:
       sym.isRealMethod && !sym.isStatic && !sym.isConstructor
 
     /** Substitutes `@polyread` in `tp` with `@mut` */
-    private def substPoly(tp: Type, mut: MutabilityQualifier)(using Context): Type =
+    private def substPoly(tp: Type, mut: Mutability)(using Context): Type =
       if mut == Polyread then return tp
       tp match
         case MutabilityType(tp, Polyread) => MutabilityType(tp, mut)
@@ -84,12 +84,12 @@ class CheckMutability extends Recheck:
      *  Here, the mutability of `C.this` is `Readonly`,
      *  which is the mutability of its enclosing method `C.f`.
      */
-    def getMutabilityFromEnclosing(tree: Tree)(using Context): MutabilityQualifier =
+    def getMutabilityFromEnclosing(tree: Tree)(using Context): Mutability =
       val cs = tree.symbol
 
       // Search from the ctx.owner until we find a method
       // whose class symbol is same as the tree.
-      @tailrec def search(sym: Symbol): MutabilityQualifier =
+      @tailrec def search(sym: Symbol): Mutability =
         if sym == NoSymbol then Mutable
         else if sym.owner == cs then
           if isRegularMethod(sym) then sym.findMutability else Mutable
@@ -114,7 +114,7 @@ class CheckMutability extends Recheck:
       if !sym.is(Flags.Synthetic) && sym.owner.isReadonlyClass then
         if sym.is(Flags.Mutable) then
           report.error(i"A readonly class is not allow to have mutable field $sym", tree.srcPos)
-        if sym.info.computeMutability(isHigher = false) < Readonly then
+        if sym.info.computeMutability(isHigher = false) != Readonly then
           report.error(i"Non-readonly field $sym is not allowed in readonly class", tree.srcPos)
       super.recheckValDef(tree, sym)
 
@@ -156,7 +156,7 @@ class CheckMutability extends Recheck:
 
         // Check assign `x.a = ???`,
         // the mutability of `x` must be `Mutable`.
-        if isAssign && qualMut > Mutable then
+        if isAssign && !(Mutable.conforms(qualMut)) then
           report.error(i"trying to mutate a field on $qualMut $qual", tree.srcPos)
 
         // Check method selection `x.f(...)`,
@@ -165,7 +165,7 @@ class CheckMutability extends Recheck:
           val mbrMut = mbrSym.findMutability
           if mbrMut == Polyread then
             return substPoly(selType.widen, qualMut)
-          else if (qualMut > mbrMut) && !mbrSym.relaxApplyCheck then
+          else if !qualMut.conforms(mbrMut) && !mbrSym.relaxApplyCheck then
             report.error(i"calling $mbrMut $mbr ${mbrSym.owner} on $qualMut $qual", tree.srcPos)
 
         // When selecting on a field, the mutability will be at least the mutability of the qualifier.

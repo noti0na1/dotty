@@ -62,9 +62,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   /** Indicates whether the subtype check used GADT bounds */
   private var GADTused: Boolean = false
 
-  protected var tp1OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
+  protected var tp1OuterMut: Mutability = Mutability.Mutable
 
-  protected var tp2OuterMut: MutabilityQualifier = MutabilityQualifier.Mutable
+  protected var tp2OuterMut: Mutability = Mutability.Mutable
 
   private var myInstance: TypeComparer = this
   def currentInstance: TypeComparer = myInstance
@@ -214,8 +214,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
     val savedTp1OuterMut = this.tp1OuterMut
     val savedTp2OuterMut = this.tp2OuterMut
-    this.tp1OuterMut = MutabilityQualifier.Mutable
-    this.tp2OuterMut = MutabilityQualifier.Mutable
+    this.tp1OuterMut = Mutability.Mutable
+    this.tp2OuterMut = Mutability.Mutable
 
     try checkMutability(tp1, tp2) && recur(tp1, tp2)
     catch {
@@ -245,7 +245,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     tp1OuterMut = tp1.computeMutability(isHigher = true)
     tp2OuterMut = tp2.computeMutability(isHigher = false)
 
-    tp1OuterMut <= tp2OuterMut
+    tp1OuterMut.conforms(tp2OuterMut)
   }
 
   /** The inner loop of the isSubType comparison.
@@ -2570,7 +2570,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
         parent1 & tp2
       else
         tp1.derivedCapturingType(parent1 & tp2, refs1)
-    case tp1: AnnotatedType if !(tp1.isRefining  || tp1.annot.getMutabilityQualifier.isDefined) =>
+    case tp1: AnnotatedType if !(tp1.isRefining  || tp1.annot.getMutability.isDefined) =>
       tp1.underlying & tp2
     case _ =>
       NoType
@@ -2595,7 +2595,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     case tp1: TypeVar if tp1.isInstantiated =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
     case tp1: AnnotatedType
-      if !(tp1.isRefining || tp1.annot.getMutabilityQualifier.isDefined) =>
+      if !(tp1.isRefining || tp1.annot.getMutability.isDefined) =>
       lub(tp1.underlying, tp2, isSoft = isSoft)
     case _ =>
       NoType
