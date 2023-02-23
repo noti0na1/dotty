@@ -3,13 +3,13 @@ package dotc
 package mutability
 
 import core.*
-import Types.*, Symbols.*, Contexts.*, Annotations.*, MutabilityQualifier.*, Decorators.*
+import Types.*, Symbols.*, Contexts.*, Annotations.*, Mutability.*, Decorators.*
 import Ordering.Implicits.*
 
 object MutabilityOps:
 
   extension (annot: Annotation)
-    def getMutabilityQualifier(using Context): Option[MutabilityQualifier] =
+    def getMutability(using Context): Option[Mutability] =
       val sym = annot.symbol
       if sym == defn.MutableAnnot then Some(Mutable)
       else if sym == defn.PolyreadAnnot then Some(Polyread)
@@ -18,8 +18,8 @@ object MutabilityOps:
 
   extension (tp: Type)
 
-    def computeMutability(isHigher: Boolean)(using Context): MutabilityQualifier =
-      def recur(tp: Type): MutabilityQualifier = tp.dealiasKeepMutabilityAnnots match\
+    def computeMutability(isHigher: Boolean)(using Context): Mutability =
+      def recur(tp: Type): Mutability = tp.dealiasKeepMutabilityAnnots match
         case MutabilityType(parent, mut) =>
           mut.max(recur(parent))
         case tp: AnnotatedType =>
@@ -29,13 +29,14 @@ object MutabilityOps:
           val tp2Mut = recur(tp.tp2)
           tp1Mut.max(tp2Mut)
         case tp: TypeRef =>
-          recur(tp.info)
+          tp.info match
+            case TypeBounds(lo, hi) =>
+              val loMut = recur(lo)
+              val hiMut = recur(hi)
+              if loMut == hiMut then loMut else Refs(Set(tp))
+            case info => recur(info)
         case tp: TypeBounds =>
-          // TODO: fix this! The way we handle type bounds is not correct.
-          // Consider a type parameter `T >: A <: B` where `A` is `mutable` and `B` is  `readonly`,
-          // `T <:< T` will fail.
-          // if isHigher then recur(tp.hi) else recur(tp.lo)
-          recur(tp.hi)
+          if isHigher then recur(tp.hi) else recur(tp.lo)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
@@ -60,13 +61,13 @@ object MutabilityOps:
 
   extension (sym: Symbol)
 
-    def findMutability(using Context): MutabilityQualifier =
-      def recur(annots: List[Annotation]): MutabilityQualifier =
+    def findMutability(using Context): Mutability =
+      def recur(annots: List[Annotation]): Mutability =
         annots match
           case Nil => Mutable
           case annot :: annots =>
             // TODO: multiple mutability annotations?
-            annot.getMutabilityQualifier match
+            annot.getMutability match
               case Some(mut) => mut
               case None => recur(annots)
       if !sym.isClass && sym.owner.isReadonlyClass
