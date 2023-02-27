@@ -17,14 +17,10 @@ object MutabilityType:
         if mut.conforms(mut1) then parent
         else apply(parent1, mut)
       case _ =>
-        val annot = mut match
-          case Mutable => defn.MutableAnnot
-          case Polyread => defn.PolyreadAnnot
-          case Readonly => defn.ReadonlyAnnot
-          case _ => defn.PolyreadAnnot // TODO: handle Refs
-        AnnotatedType(parent, Annotation(annot, Span(0)))
+        AnnotatedType(parent, MutabilityAnnotation(mut))
 
-  def unapply(tp: AnnotatedType)(using Context): Option[(Type, Mutability)] =
-    tp.annot.getMutability.map((tp.parent, _))
+  def unapply(tp: AnnotatedType)(using Context): Option[(Type, Mutability)] = tp match
+    case AnnotatedType(parent, MutabilityAnnotation(mut)) => Some((parent, mut))
+    case _ => tp.annot.getMutability.map((tp.parent, _))
 
 end MutabilityType
