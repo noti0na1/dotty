@@ -4,8 +4,10 @@ package mutability
 
 import core.*
 import Types.*, Symbols.*, Contexts.*, Annotations.*, Decorators.*, MutabilityOps.*
+import printing.{Showable, Printer}
+import printing.Texts.*
 
-enum Mutability:
+enum Mutability extends Showable:
   case Readonly
   case Polyread // temporary solution for polyread
   case Refs(refs: Set[TypeRef])
@@ -52,3 +54,9 @@ enum Mutability:
         case _ =>
     if this.conforms(that) then that else this
 
+  override def toText(printer: Printer): Text = this match
+    case Readonly => Str("readonly")
+    case Polyread => Str("polyread")
+    case Refs(refs) =>
+      Str("refs{") ~ Text(refs.toList.map(printer.toText), ", ") ~ Str("}")
+    case Mutable => Str("mutable")
