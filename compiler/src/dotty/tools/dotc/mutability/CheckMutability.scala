@@ -115,7 +115,7 @@ class CheckMutability extends Recheck:
         if sym.is(Flags.Mutable) then
           report.error(i"A readonly class is not allow to have mutable field $sym", tree.srcPos)
         if sym.info.computeMutability(isHigher = false) != Readonly then
-          report.error(i"Non-readonly field $sym is not allowed in readonly class", tree.srcPos)
+          report.error(i"Non-readonly field $sym with type ${sym.info} is not allowed in a readonly class", tree.srcPos)
       super.recheckValDef(tree, sym)
 
     override def recheckThis(tree: This, pt: Type)(using Context): Type =
