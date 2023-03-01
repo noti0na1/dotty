@@ -19,11 +19,13 @@ object MutabilityOps:
   extension (tp: Type)
 
     def computeMutability(isHigher: Boolean)(using Context): Mutability =
-      def recur(tp: Type): Mutability = tp.dealiasKeepMutabilityAnnots match
+      def recur(tp: Type): Mutability = tp.dealiasKeepAnnots match
         case MutabilityType(parent, mut) =>
           mut.max(recur(parent))
         case tp: AnnotatedType =>
-          recur(tp.parent)
+          // consider repeated params as readonly
+          if tp.annot.symbol == defn.RepeatedAnnot then Readonly
+          else recur(tp.parent)
         case tp: AndOrType =>
           val tp1Mut = recur(tp.tp1)
           val tp2Mut = recur(tp.tp2)
