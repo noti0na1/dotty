@@ -19,6 +19,7 @@ object MutabilityType:
       case _ =>
         AnnotatedType(parent, MutabilityAnnotation(mut))
 
+  // only find the mutability annotation on the top level
   def unapply(tp: AnnotatedType)(using Context): Option[(Type, Mutability)] = tp match
     case AnnotatedType(parent, MutabilityAnnotation(mut)) => Some((parent, mut))
     case _ => tp.annot.getMutability.map((tp.parent, _))
