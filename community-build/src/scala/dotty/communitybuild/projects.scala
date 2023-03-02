@@ -766,10 +766,19 @@ object projects:
     dependencies = List(utest, scalacheck)
   )
 
+  lazy val simpleFansi = SbtCommunityProject(
+    project           = "simpleFansi",
+    sbtTestCommand    = "compile; test",
+    sbtPublishCommand = "publishLocal",
+    dependencies = List(utest, sourcecode),
+    // dependencies      = List(scalatest),
+  )
+
   lazy val cs241e = SbtCommunityProject(
     project           = "cs241e-solu",
     sbtTestCommand    = "compile; run",
     sbtPublishCommand = "publishLocal",
+    
     // dependencies      = List(scalatest),
   )
 
@@ -856,6 +865,7 @@ def allProjects = List(
   projects.http4s,
   projects.parboiled2,
   projects.cs241e,
+  projects.simpleFansi
 )
 
 lazy val projectMap = allProjects.groupBy(_.project)
