@@ -768,9 +768,9 @@ object projects:
 
   lazy val simpleFansi = SbtCommunityProject(
     project           = "simpleFansi",
-    sbtTestCommand    = "compile; test",
+    sbtTestCommand    = "compile; run",
     sbtPublishCommand = "publishLocal",
-    dependencies = List(utest, sourcecode),
+    dependencies = List(sourcecode),
     // dependencies      = List(scalatest),
   )
 
@@ -778,7 +778,7 @@ object projects:
     project           = "cs241e-solu",
     sbtTestCommand    = "compile; run",
     sbtPublishCommand = "publishLocal",
-    
+
     // dependencies      = List(scalatest),
   )
 

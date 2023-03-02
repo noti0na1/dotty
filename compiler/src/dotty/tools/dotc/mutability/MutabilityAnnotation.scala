@@ -40,6 +40,7 @@ case class MutabilityAnnotation(mut: Mutability) extends Annotation:
     case MutabilityAnnotation(mut) => this.mut == mut
     case _ => false
 
+  // TODO: we need this as well
   // override def mapWith(tm: TypeMap)(using Context) = mut match
   //   case Refs(refs) =>
   //     // TODO

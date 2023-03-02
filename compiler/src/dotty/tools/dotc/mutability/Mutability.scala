@@ -21,6 +21,9 @@ enum Mutability extends Showable:
   def conforms(that: Mutability)(using Context): Boolean = that match
     case Readonly => true
     case Polyread if this == Polyread || this == Mutable => true
+    // If we are sure the refs only contain type references
+    // which have different mutabilities on lower and higher bounds,
+    // we can optimize this case, because !Refs(_).conforms(Mutable)
     case Mutable if this == Mutable => true
     case Refs(thatRefs) => this match
       case Mutable => true
