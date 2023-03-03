@@ -114,7 +114,7 @@ class CheckMutability extends Recheck:
       if !sym.is(Flags.Synthetic) && sym.owner.isReadonlyClass then
         if sym.is(Flags.Mutable) then
           report.error(i"A readonly class is not allow to have mutable field $sym", tree.srcPos)
-        if sym.info.computeMutability(isHigher = false) != Readonly then
+        if sym.info.computeMutability != Readonly then
           report.error(i"Non-readonly field $sym with type ${sym.info} is not allowed in a readonly class", tree.srcPos)
       super.recheckValDef(tree, sym)
 
@@ -152,11 +152,11 @@ class CheckMutability extends Recheck:
         val qual = tree.qualifier
         val qualMut = qual match
           case _: This | _: Super => getMutabilityFromEnclosing(qual)
-          case _ => qualType.computeMutability(isHigher = true)
+          case _ => qualType.computeMutability
 
         // Check assign `x.a = ???`,
         // the mutability of `x` must be `Mutable`.
-        if isAssign && !(Mutable.conforms(qualMut)) then
+        if isAssign && !(qualMut.conforms(Mutable)) then
           report.error(i"trying to mutate a field on $qualMut $qual", tree.srcPos)
 
         // Check method selection `x.f(...)`,
@@ -195,7 +195,7 @@ class CheckMutability extends Recheck:
               val argType = recheck(arg, recheckFtp)
               ftp match
                 case MutabilityType(_, Polyread) =>
-                  polyMut = polyMut.max(argType.computeMutability(isHigher = true))
+                  polyMut = polyMut.max(argType.computeMutability)
                 case _ =>
               val formals1 =
                 if fntpe.isParamDependent

@@ -242,8 +242,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       || tp1.isInstanceOf[TypeBounds] && tp2.isInstanceOf[TypeBounds]
       then return true
 
-    tp1OuterMut = tp1.computeMutability(isHigher = true)
-    tp2OuterMut = tp2.computeMutability(isHigher = false)
+    tp1OuterMut = tp1.computeMutability
+    tp2OuterMut = tp2.computeMutability
 
     tp1OuterMut.conforms(tp2OuterMut)
   }
