@@ -10,12 +10,17 @@ import printing.Texts.*
 enum Mutability extends Showable:
   case Readonly
   case Polyread // temporary solution for polyread
-  case Refs(refs: Set[TypeRef])
+  case Refs(refs: Set[Type])
   case Mutable
 
-  def widen(refs: Set[TypeRef], isHigher: Boolean)(using Context): Mutability =
-    refs.foldLeft(Mutable) { (mut, ref) =>
-      mut.max(ref.info.computeMutability(isHigher))
+  def widen(tps: Set[Type], isHigher: Boolean)(using Context): Mutability =
+    tps.foldLeft(Mutable) { (mut, tp) =>
+      (tp match
+        case ref: NamedType => ref.info match
+          case TypeBounds(lo, hi) =>
+            if isHigher then hi else lo
+          case info => info
+        case _ => tp).computeMutability.max(mut)
     }
 
   def conforms(that: Mutability)(using Context): Boolean = that match
@@ -28,12 +33,17 @@ enum Mutability extends Showable:
     case Refs(thatRefs) => this match
       case Mutable => true
       case Refs(thisRefs) =>
-        val remainingThisRefs = thisRefs.filter { thisRef => !thatRefs.exists{ thatRef =>
-          (thisRef.symbol ne NoSymbol)
-          && (thisRef.symbol eq thatRef.symbol)
-          // In theory, we should use `isPrefixSub` here,
-          // but it's not exposed by `TypeComparer`.
-          && (thisRef.prefix <:< thatRef.prefix)
+        val remainingThisRefs = thisRefs.filter { thisRef => !thatRefs.exists { thatRef =>
+          (thisRef != NoType) && (thisRef eq thatRef)
+          || { (thisRef, thatRef) match
+            case (thisRef: NamedType, thatRef: NamedType) =>
+              (thisRef.symbol ne NoSymbol)
+              && (thisRef.symbol eq thatRef.symbol)
+              // In theory, we should use `isPrefixSub` here,
+              // but it's not exposed by `TypeComparer`.
+              && (thisRef.prefix <:< thatRef.prefix)
+            case _ => false
+          }
         }}
         remainingThisRefs.isEmpty
         || widen(remainingThisRefs, isHigher = true).conforms(that)

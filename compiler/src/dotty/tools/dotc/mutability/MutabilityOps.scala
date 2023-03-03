@@ -5,40 +5,56 @@ package mutability
 import core.*
 import Types.*, Symbols.*, Contexts.*, Annotations.*, Mutability.*, Decorators.*
 import Ordering.Implicits.*
+import ast.Trees.*
+import ast.{tpd, untpd}
 
 object MutabilityOps:
 
+  import tpd.*
+
   extension (annot: Annotation)
-    def getMutability(using Context): Option[Mutability] =
-      val sym = annot.symbol
-      if sym == defn.MutableAnnot then Some(Mutable)
-      else if sym == defn.PolyreadAnnot then Some(Polyread)
-      else if sym == defn.ReadonlyAnnot then Some(Readonly)
-      else None
+    def getMutability(using Context): Option[Mutability] = annot match
+      case MutabilityAnnotation(mut) => Some(mut)
+      case _ =>
+        val sym = annot.symbol
+        if sym == defn.MutableAnnot then Some(Mutable)
+        else if sym == defn.PolyreadAnnot then Some(Polyread)
+        else if sym == defn.ReadonlyAnnot then Some(Readonly)
+        else if sym == defn.RefmutAnnot then
+          annot.tree match
+            case Apply(TypeApply(_, List(ttree: TypeTree)), _) =>
+              defn.tupleTypes(ttree.tpe) match
+                case Some(tpes) =>
+                  // return Some(Refs(tpes.toSet))
+                  // println(i"RefmutAnnot: ${tpes} => ${tpes.toRefs}")
+                  return Some(tpes.toRefs)
+                case _ =>
+            case _ =>
+          Some(Mutable)
+        else None
 
   extension (tp: Type)
 
-    def computeMutability(isHigher: Boolean)(using Context): Mutability =
+    def computeMutability(using Context): Mutability =
       def recur(tp: Type): Mutability = tp.dealiasKeepAnnots match
         case MutabilityType(parent, mut) =>
           mut.max(recur(parent))
         case tp: AnnotatedType =>
-          // consider repeated params as readonly
-          if tp.annot.symbol == defn.RepeatedAnnot then Readonly
-          else recur(tp.parent)
+          // TODO: consider repeated params as readonly
+          // if tp.annot.symbol == defn.RepeatedAnnot then Readonly
+          // else recur(tp.parent)
+          recur(tp.parent)
         case tp: AndOrType =>
           val tp1Mut = recur(tp.tp1)
           val tp2Mut = recur(tp.tp2)
           tp1Mut.max(tp2Mut)
-        case tp: TypeRef =>
+        case tp: NamedType =>
           tp.info match
             case TypeBounds(lo, hi) =>
               val loMut = recur(lo)
               val hiMut = recur(hi)
               if loMut == hiMut then loMut else Refs(Set(tp))
             case info => recur(info)
-        case tp: TypeBounds =>
-          if isHigher then recur(tp.hi) else recur(tp.lo)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
@@ -51,15 +67,20 @@ object MutabilityOps:
           if tp.classSymbol.isReadonlyClass then Readonly else Mutable
         case _ =>
           Mutable
-      val r = recur(tp)
-      // println(i"computeMutability($tp, $isHigher) = $r")
-      r
+      recur(tp)
 
     def stripMutability(using Context): Type = tp match
       case MutabilityType(parent, _) => parent.stripMutability
       case tp: AnnotatedType => tp.derivedAnnotatedType(tp.parent.stripMutability, tp.annot)
       case tp: AndOrType => tp.derivedAndOrType(tp.tp1.stripMutability, tp.tp2.stripMutability)
       case _ => tp
+
+  extension (tps: Seq[Type])
+
+    def toRefs(using Context): Mutability =
+      tps.foldLeft(Mutable) {
+        case (mut, tp) => mut.max(tp.computeMutability)
+      }
 
   extension (sym: Symbol)
 
