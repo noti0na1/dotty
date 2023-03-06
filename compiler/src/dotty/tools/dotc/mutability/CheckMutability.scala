@@ -208,6 +208,3 @@ class CheckMutability extends Recheck:
           val argTypes = recheckArgs(tree.args, formals, fntpe.paramRefs)
           val resTp = constFold(tree, instantiate(fntpe, argTypes, tree.fun.symbol))
           substPoly(resTp, polyMut)
-
-
-

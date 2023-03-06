@@ -21,6 +21,9 @@ import typer.IfBottom
 import reporting.TestingReporter
 import cc.{CapturingType, derivedCapturingType, CaptureSet, isBoxed, isBoxedCapturing}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
+import mutability.Mutability
+import mutability.MutabilityOps._
+import mutability.MutabilityType
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
@@ -298,6 +301,8 @@ object TypeOps:
           return tp1.rebind(approximateOr(tp1.parent, tp2))
         case CapturingType(parent1, refs1) =>
           return tp1.derivedCapturingType(approximateOr(parent1, tp2), refs1)
+        case MutabilityType(parent1, mut1) =>
+          return tp1.derivedMutabilityType(approximateOr(parent1, tp2), mut1)
         case err: ErrorType =>
           return err
         case _ =>
@@ -307,6 +312,8 @@ object TypeOps:
           return tp2.rebind(approximateOr(tp1, tp2.parent))
         case CapturingType(parent2, refs2) =>
           return tp2.derivedCapturingType(approximateOr(tp1, parent2), refs2)
+        case MutabilityType(parent2, mut2) =>
+          return tp1.derivedMutabilityType(approximateOr(tp1, parent2), mut2)
         case err: ErrorType =>
           return err
         case _ =>
