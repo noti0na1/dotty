@@ -35,6 +35,12 @@ object MutabilityOps:
 
   extension (tp: Type)
 
+     /** @pre `tp` is a CapturingType */
+    def derivedMutabilityType(parent: Type, mut: Mutability)(using Context): Type = tp match
+      case tp @ MutabilityType(p, m) =>
+        if (parent eq p) && (mut eq m) then tp
+        else MutabilityType(parent, mut)
+
     def computeMutability(using Context): Mutability =
       def recur(tp: Type): Mutability = tp.dealiasKeepAnnots match
         case MutabilityType(parent, mut) =>
@@ -55,6 +61,13 @@ object MutabilityOps:
               val hiMut = recur(hi)
               if loMut == hiMut then loMut else Refs(Set(tp))
             case info => recur(info)
+        case tp: TypeParamRef =>
+          tp.underlying match
+            case TypeBounds(lo, hi) =>
+              val loMut = recur(lo)
+              val hiMut = recur(hi)
+              if loMut == hiMut then loMut else Refs(Set(tp))
+            case underlying => recur(underlying)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>

@@ -13,6 +13,15 @@ enum Mutability extends Showable:
   case Refs(refs: Set[Type])
   case Mutable
 
+  def map(tm: TypeMap)(using Context): Mutability = this match
+    case Refs(refs) =>
+      val elems = refs.toList
+      val elems1 = elems.mapConserve(tm)
+      // println(s"refs $refs -> $elems1")
+      if elems1 eq elems then this
+      else elems1.toRefs
+    case _ => this
+
   def widen(tps: Set[Type], isHigher: Boolean)(using Context): Mutability =
     tps.foldLeft(Mutable) { (mut, tp) =>
       (tp match

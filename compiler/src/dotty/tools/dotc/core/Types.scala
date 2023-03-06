@@ -38,7 +38,9 @@ import java.lang.ref.WeakReference
 import compiletime.uninitialized
 import cc.{CapturingType, CaptureSet, derivedCapturingType, isBoxedCapturing, EventuallyCapturingType, boxedUnlessFun}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
+import mutability.Mutability
 import mutability.MutabilityOps._
+import mutability.MutabilityType
 
 import scala.annotation.internal.sharable
 import scala.annotation.threadUnsafe
@@ -368,6 +370,10 @@ object Types {
       case tp: LambdaType => tp.resultType.unusableForInference || tp.paramInfos.exists(_.unusableForInference)
       case WildcardType(optBounds) => optBounds.unusableForInference
       case CapturingType(parent, refs) => parent.unusableForInference || refs.elems.exists(_.unusableForInference)
+      case MutabilityType(parent, mut) => parent.unusableForInference || (mut match {
+        case Mutability.Refs(refs) => refs.exists(_.unusableForInference)
+        case _ => false
+      })
       case _: ErrorType => true
       case _ => false
 
@@ -3846,6 +3852,9 @@ object Types {
                     case tp: TermParamRef if tp.binder eq thisLambdaType => combine(s, CaptureDeps)
                     case _ => s
                 }
+              case MutabilityType(parent, mut) => mut match
+                case Mutability.Mutable | Mutability.Readonly | Mutability.Polyread => compute(status, parent, theAcc)
+                case Mutability.Refs(refs) => refs.foldLeft(compute(status, tp.parent, theAcc))(compute(_, _, theAcc))
               case _ =>
                 if tp.annot.refersToParamOf(thisLambdaType) then TrueDeps
                 else compute(status, tp.parent, theAcc)
@@ -5008,6 +5017,8 @@ object Types {
           else givenSelf match
             case givenSelf @ EventuallyCapturingType(tp, _) =>
               givenSelf.derivedAnnotatedType(tp & appliedRef, givenSelf.annot)
+            case givenSelf @ MutabilityType(tp, _) =>
+              givenSelf.derivedAnnotatedType(tp & appliedRef, givenSelf.annot)
             case _ =>
               AndType(givenSelf, appliedRef)
         }
@@ -5646,6 +5657,8 @@ object Types {
       tp.derivedAnnotatedType(underlying, annot)
     protected def derivedCapturingType(tp: Type, parent: Type, refs: CaptureSet): Type =
       tp.derivedCapturingType(parent, refs)
+    protected def derivedMutabilityType(tp: Type, parent: Type, mut: Mutability): Type =
+      tp.derivedMutabilityType(parent, mut)
     protected def derivedWildcardType(tp: WildcardType, bounds: Type): Type =
       tp.derivedWildcardType(bounds)
     protected def derivedSkolemType(tp: SkolemType, info: Type): Type =
@@ -5724,6 +5737,9 @@ object Types {
 
         case CapturingType(parent, refs) =>
           mapCapturingType(tp, parent, refs, variance)
+
+        case tp @ MutabilityType(parent, mut) =>
+          derivedMutabilityType(tp, this(parent), mut.map(this))
 
         case tp @ AnnotatedType(underlying, annot) =>
           val underlying1 = this(underlying)
@@ -6072,6 +6088,13 @@ object Types {
         case _ =>
           tp.derivedCapturingType(parent, refs)
 
+    override protected def derivedMutabilityType(tp: Type, parent: Type, mut: Mutability): Type =
+      parent match // TODO ^^^ handle ranges in capture sets as well
+        case Range(lo, hi) =>
+          range(derivedMutabilityType(tp, lo, mut), derivedMutabilityType(tp, hi, mut))
+        case _ =>
+          tp.derivedMutabilityType(parent, mut)
+
     override protected def derivedWildcardType(tp: WildcardType, bounds: Type): WildcardType =
       tp.derivedWildcardType(rangeToBounds(bounds))
 
@@ -6231,6 +6254,11 @@ object Types {
 
       case CapturingType(parent, refs) =>
         (this(x, parent) /: refs.elems)(this)
+
+      case MutabilityType(parent, mut) => mut match
+        case Mutability.Mutable | Mutability.Readonly | Mutability.Polyread => this(x, parent)
+        case Mutability.Refs(refs) =>
+          refs.foldLeft(this(x, parent))(this)
 
       case AnnotatedType(underlying, annot) =>
         this(applyToAnnot(x, annot), underlying)
