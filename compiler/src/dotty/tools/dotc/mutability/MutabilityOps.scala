@@ -12,6 +12,9 @@ object MutabilityOps:
 
   import tpd.*
 
+  def isCheckingMutability(using Context): Boolean =
+    ctx.settings.Ymut.value && ctx.phase == Phases.checkMutabilityPhase
+
   extension (annot: Annotation)
     def getMutability(using Context): Option[Mutability] = annot match
       case MutabilityAnnotation(mut) => Some(mut)
@@ -62,12 +65,11 @@ object MutabilityOps:
               if loMut == hiMut then loMut else Refs(Set(tp))
             case info => recur(info)
         case tp: TypeParamRef =>
-          tp.underlying match
+          TypeComparer.bounds(tp) match
             case TypeBounds(lo, hi) =>
               val loMut = recur(lo)
               val hiMut = recur(hi)
               if loMut == hiMut then loMut else Refs(Set(tp))
-            case underlying => recur(underlying)
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
