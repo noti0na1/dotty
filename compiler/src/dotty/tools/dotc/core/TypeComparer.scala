@@ -463,8 +463,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
               case tp2a: TypeParamRef => constraint.isLess(tp1, tp2a)
               case tp2a: AndType => recur(tp1, tp2a)
               case _ => false
-          || isSubTypeWhenFrozen(bounds(tp1).hi.boxed, tp2)
-          || (if canConstrain(tp1) && !approx.high then
+          || {
+            val tp1HiMut = bounds(tp1).hi.computeMutability
+            isSubTypeWhenFrozen(
+              MutabilityType(bounds(tp1).hi.boxed, tp1OuterMut),
+              MutabilityType(tp2, tp2OuterMut.max(tp1HiMut)))
+          } || (if canConstrain(tp1) && !approx.high then
                 addConstraint(tp1, tp2, fromBelow = false) && flagNothingBound
               else thirdTry)
 
