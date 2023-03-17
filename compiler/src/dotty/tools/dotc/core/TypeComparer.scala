@@ -62,9 +62,11 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
   /** Indicates whether the subtype check used GADT bounds */
   private var GADTused: Boolean = false
 
-  protected var tp1OuterMut: Mutability = Mutability.Mutable
+  protected var tp1OuterMut: Type = defn.MutableType
 
-  protected var tp2OuterMut: Mutability = Mutability.Mutable
+  protected var tp2OuterMut: Type = defn.MutableType
+
+  protected var ignoreMutability: Boolean = false
 
   private var myInstance: TypeComparer = this
   def currentInstance: TypeComparer = myInstance
@@ -214,8 +216,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
     val savedTp1OuterMut = this.tp1OuterMut
     val savedTp2OuterMut = this.tp2OuterMut
-    this.tp1OuterMut = Mutability.Mutable
-    this.tp2OuterMut = Mutability.Mutable
+    this.tp1OuterMut = defn.MutableType
+    this.tp2OuterMut = defn.MutableType
 
     try checkMutability(tp1, tp2) && recur(tp1, tp2)
     catch {
@@ -235,16 +237,25 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   protected def checkMutability(tp1: Type, tp2: Type): Boolean = {
     if !isCheckingMutability
+      || ignoreMutability
       || tp2.isAny
       || tp2.isInstanceOf[ProtoType]
       // Declaration subsumption
       || tp1.isInstanceOf[TypeBounds] && tp2.isInstanceOf[TypeBounds]
       then return true
 
-    tp1OuterMut = tp1.computeMutability
-    tp2OuterMut = tp2.computeMutability
-
-    tp1OuterMut.conforms(tp2OuterMut)
+    val ignore = this.ignoreMutability
+    this.ignoreMutability = true
+    try {
+      tp1OuterMut = tp1.computeMutability
+      tp2OuterMut = tp2.computeMutability
+      val r = isSubType(tp1OuterMut, tp2OuterMut)
+      // println(i"check mutability ($frozenConstraint) $tp1 ($tp1OuterMut) <:< $tp2 ($tp2OuterMut) = $r")
+      r
+    }
+    finally {
+      this.ignoreMutability = ignore
+    }
   }
 
   /** The inner loop of the isSubType comparison.
@@ -467,7 +478,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             val tp1HiMut = bounds(tp1).hi.computeMutability
             isSubTypeWhenFrozen(
               MutabilityType(bounds(tp1).hi.boxed, tp1OuterMut),
-              MutabilityType(tp2, tp2OuterMut.max(tp1HiMut)))
+              MutabilityType(tp2, OrType(tp2OuterMut, tp1HiMut, soft = false)))
           } || (if canConstrain(tp1) && !approx.high then
                 addConstraint(tp1, tp2, fromBelow = false) && flagNothingBound
               else thirdTry)
@@ -600,10 +611,10 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           && (isBottom(tp1) || GADTusage(tp2.symbol))
 
         {
-          val approxHiMut = info2.lo.computeMutability.max(tp2OuterMut)
+          val approxHiMut = OrType(info2.lo.computeMutability, tp2OuterMut, soft = false)
           isSubApproxHi(MutabilityType(tp1, approxHiMut), MutabilityType(info2.lo.boxedIfTypeParam(tp2.symbol), tp2OuterMut))
         } && {
-          val approxHiMut = info2.hi.computeMutability.max(tp2OuterMut)
+          val approxHiMut = OrType(info2.hi.computeMutability, tp2OuterMut, soft = false)
           trustBounds || isSubApproxHi(MutabilityType(tp1, approxHiMut),  MutabilityType(info2.hi, tp2OuterMut))
         }
         || compareGADT
@@ -929,13 +940,13 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
             (!caseLambda.exists || canWidenAbstract)
                 && {
-                  val approxLowMut = hi1.computeMutability.max(tp1OuterMut)
+                  val approxLowMut = OrType(hi1.computeMutability, tp1OuterMut, soft = false)
                   isSubType(
                     MutabilityType(hi1.boxedIfTypeParam(tp1.symbol), tp1OuterMut),
                     MutabilityType(tp2, approxLowMut),
                     approx.addLow)
                 } && {
-                  val approxLowMut = lo1.computeMutability.max(tp1OuterMut)
+                  val approxLowMut = OrType(lo1.computeMutability, tp1OuterMut, soft = false)
                   trustBounds || isSubType(MutabilityType(lo1, tp1OuterMut), MutabilityType(tp2, approxLowMut), approx.addLow)
                 }
             || compareGADT

@@ -363,7 +363,7 @@ object RefChecks {
         else
           val memberMut = member.findMutability
           val otherMut = other.findMutability
-          memberMut == otherMut
+          memberMut =:= otherMut
 
       def compatTypes(memberTp: Type, otherTp: Type): Boolean =
         try

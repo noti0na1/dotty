@@ -1046,12 +1046,21 @@ class Definitions {
   @tu lazy val RequiresCapabilityAnnot: ClassSymbol = requiredClass("scala.annotation.internal.requiresCapability")
   @tu lazy val RetainsAnnot: ClassSymbol = requiredClass("scala.annotation.retains")
   @tu lazy val RetainsByNameAnnot: ClassSymbol = requiredClass("scala.annotation.retainsByName")
-  @tu lazy val MutableAnnot: ClassSymbol = requiredClass("scala.annotation.mutable")
-  @tu lazy val PolyreadAnnot: ClassSymbol = requiredClass("scala.annotation.polyread")
-  @tu lazy val ReadonlyAnnot: ClassSymbol = requiredClass("scala.annotation.readonly")
-  @tu lazy val RefmutAnnot: ClassSymbol = requiredClass("scala.annotation.refmut")
 
   @tu lazy val JavaRepeatableAnnot: ClassSymbol = requiredClass("java.lang.annotation.Repeatable")
+
+  // Mutability
+  @tu lazy val MutableClass: ClassSymbol = requiredClass("scala.mutability.Mutable")
+  def MutableType: Type = MutableClass.typeRef
+  @tu lazy val PolyreadClass: ClassSymbol = requiredClass("scala.mutability.Polyread")
+  def PolyreadType: Type = MutableClass.typeRef
+  @tu lazy val ReadonlyClass: ClassSymbol = requiredClass("scala.mutability.Readonly")
+  def ReadonlyType: Type = MutableClass.typeRef
+
+  // @tu lazy val MutableAnnot: ClassSymbol = requiredClass("scala.mutability.mutable")
+  // @tu lazy val PolyreadAnnot: ClassSymbol = requiredClass("scala.mutability.polyread")
+  // @tu lazy val ReadonlyAnnot: ClassSymbol = requiredClass("scala.mutability.readonly")
+  @tu lazy val MutAnnot: ClassSymbol = requiredClass("scala.mutability.mut")
 
   // A list of meta-annotations that are relevant for fields and accessors
   @tu lazy val NonBeanMetaAnnots: Set[Symbol] =

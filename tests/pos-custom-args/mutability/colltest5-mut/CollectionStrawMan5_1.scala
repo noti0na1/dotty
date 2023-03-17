@@ -6,7 +6,7 @@ import scala.reflect.ClassTag
 import annotation.unchecked.uncheckedVariance
 import annotation.tailrec
 import annotation.targetName
-import scala.annotation.{readonly, polyread, mutable}
+import scala.mutability._
 
 
 /** A strawman architecture for new collections. It contains some

@@ -3,7 +3,7 @@ package dotc
 package mutability
 
 import core.*
-import Types.*, Symbols.*, Contexts.*, Annotations.*, Mutability.*, Decorators.*
+import Types.*, Symbols.*, Contexts.*, Annotations.*, Decorators.*
 import Ordering.Implicits.*
 import ast.Trees.*
 import ast.{tpd, untpd}
@@ -16,60 +16,67 @@ object MutabilityOps:
     ctx.settings.Ymut.value && ctx.phase == Phases.checkMutabilityPhase
 
   extension (annot: Annotation)
-    def getMutability(using Context): Option[Mutability] = annot match
+    def getMutability(using Context): Option[Type] = annot match
       case MutabilityAnnotation(mut) => Some(mut)
       case _ =>
-        val sym = annot.symbol
-        if sym == defn.MutableAnnot then Some(Mutable)
-        else if sym == defn.PolyreadAnnot then Some(Polyread)
-        else if sym == defn.ReadonlyAnnot then Some(Readonly)
-        else if sym == defn.RefmutAnnot then
+        if annot.symbol == defn.MutAnnot then
           annot.tree match
-            case Apply(TypeApply(_, List(ttree: TypeTree)), _) =>
-              defn.tupleTypes(ttree.tpe) match
-                case Some(tpes) =>
-                  // return Some(Refs(tpes.toSet))
-                  // println(i"RefmutAnnot: ${tpes} => ${tpes.toRefs}")
-                  return Some(tpes.toRefs)
-                case _ =>
-            case _ =>
-          Some(Mutable)
+            case Apply(TypeApply(_, List(tptree: TypeTree)), _) =>
+              Some(tptree.tpe)
+            case _ => None
         else None
 
   extension (tp: Type)
 
+    def union(that: Type)(using Context): Type =
+      if tp.isRef(defn.MutableClass) then that
+      else if tp.isRef(defn.ReadonlyClass) then tp
+      else if that.isRef(defn.MutableClass) then tp
+      else if that.isRef(defn.ReadonlyClass) then that
+      else OrType(tp, that, soft = false)
+
      /** @pre `tp` is a CapturingType */
-    def derivedMutabilityType(parent: Type, mut: Mutability)(using Context): Type = tp match
+    def derivedMutabilityType(parent: Type, mut: Type)(using Context): Type = tp match
       case tp @ MutabilityType(p, m) =>
         if (parent eq p) && (mut eq m) then tp
         else MutabilityType(parent, mut)
 
-    def computeMutability(using Context): Mutability =
-      def recur(tp: Type): Mutability = tp.dealiasKeepAnnots match
+    def computeMutability(using Context): Type =
+      def recur(tp: Type): Type = tp.dealiasKeepAnnots match
         case MutabilityType(parent, mut) =>
-          mut.max(recur(parent))
+          recur(parent).union(mut)
         case tp: AnnotatedType =>
-          // TODO: consider repeated params as readonly
+          // TODO: consider repeated params as readonly?
           // if tp.annot.symbol == defn.RepeatedAnnot then Readonly
           // else recur(tp.parent)
           recur(tp.parent)
-        case tp: AndOrType =>
+        case tp: AndType =>
           val tp1Mut = recur(tp.tp1)
           val tp2Mut = recur(tp.tp2)
-          tp1Mut.max(tp2Mut)
+          AndType(tp1Mut, tp2Mut)
+        case tp: OrType =>
+          val tp1Mut = recur(tp.tp1)
+          val tp2Mut = recur(tp.tp2)
+          tp1Mut.union(tp2Mut)
         case tp: NamedType =>
           tp.info match
             case TypeBounds(lo, hi) =>
               val loMut = recur(lo)
               val hiMut = recur(hi)
-              if loMut == hiMut then loMut else Refs(Set(tp))
+              if loMut =:= hiMut then loMut
+              else
+                report.error(i"$tp has different mutability bounds $loMut and $hiMut")
+                NoType
             case info => recur(info)
         case tp: TypeParamRef =>
           TypeComparer.bounds(tp) match
             case TypeBounds(lo, hi) =>
               val loMut = recur(lo)
               val hiMut = recur(hi)
-              if loMut == hiMut then loMut else Refs(Set(tp))
+              if loMut =:= hiMut then loMut
+              else
+                report.error(i"$tp has different mutability bounds $loMut and $hiMut")
+                NoType
         case tp: SingletonType =>
           recur(tp.underlying)
         case tp: ExprType =>
@@ -77,32 +84,20 @@ object MutabilityOps:
         case tp: MatchType =>
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
-          else Mutable
+          else defn.MutableType
         case tp: ClassInfo =>
-          if tp.classSymbol.isReadonlyClass then Readonly else Mutable
+          // println(i"computeMutability: $tp, ${tp.classSymbol.isReadonlyClass}")
+          if tp.classSymbol.isReadonlyClass then defn.ReadonlyType else defn.MutableType
         case _ =>
-          Mutable
+          defn.MutableType
       recur(tp)
-
-    def stripMutability(using Context): Type = tp match
-      case MutabilityType(parent, _) => parent.stripMutability
-      case tp: AnnotatedType => tp.derivedAnnotatedType(tp.parent.stripMutability, tp.annot)
-      case tp: AndOrType => tp.derivedAndOrType(tp.tp1.stripMutability, tp.tp2.stripMutability)
-      case _ => tp
-
-  extension (tps: Seq[Type])
-
-    def toRefs(using Context): Mutability =
-      tps.foldLeft(Mutable) {
-        case (mut, tp) => mut.max(tp.computeMutability)
-      }
 
   extension (sym: Symbol)
 
-    def findMutability(using Context): Mutability =
-      def recur(annots: List[Annotation]): Mutability =
+    def findMutability(using Context): Type =
+      def recur(annots: List[Annotation]): Type =
         annots match
-          case Nil => Mutable
+          case Nil => defn.MutableType
           case annot :: annots =>
             // TODO: multiple mutability annotations?
             annot.getMutability match
@@ -110,8 +105,11 @@ object MutabilityOps:
               case None => recur(annots)
       if !sym.isClass && sym.owner.isReadonlyClass
         || defn.pureMethods.contains(sym)
-      then Readonly
-      else recur(sym.annotations)
+      then defn.ReadonlyType
+      else
+        val r = recur(sym.annotations)
+        // println(s"findMutability: $sym => $r")
+        r
 
     def isReadonlyClass(using Context): Boolean =
       sym.isValueClass
@@ -128,7 +126,7 @@ object MutabilityOps:
       || sym == defn.ConversionClass
       || sym == defn.Mirror_SingletonClass
       || defn.isFunctionSymbol(sym)
-      || sym.isClass && sym.findMutability == Readonly
+      || sym.isClass && (sym.findMutability.isRef(defn.ReadonlyClass))
 
     def relaxApplyCheck(using Context): Boolean =
       val owner = sym.owner

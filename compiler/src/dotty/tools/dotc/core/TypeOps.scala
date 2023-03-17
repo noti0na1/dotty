@@ -21,7 +21,6 @@ import typer.IfBottom
 import reporting.TestingReporter
 import cc.{CapturingType, derivedCapturingType, CaptureSet, isBoxed, isBoxedCapturing}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
-import mutability.Mutability
 import mutability.MutabilityOps._
 import mutability.MutabilityType
 

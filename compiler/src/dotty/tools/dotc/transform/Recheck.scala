@@ -232,6 +232,14 @@ abstract class Recheck extends Phase, SymTransformer:
 
     def recheckDefDef(tree: DefDef, sym: Symbol)(using Context): Unit =
       val rhsCtx = linkConstructorParams(sym).withOwner(sym)
+      val tparamss = tree.paramss.collect { case TypeDefs(tparams) => tparams }
+      if tparamss.nonEmpty then
+        val tparamSyms = tparamss.flatten.map(_.symbol)
+        if !sym.isConstructor then
+          // we're typing a polymorphic definition's body,
+          // so we allow constraining all of its type parameters
+          // constructors are an exception as we don't allow constraining type params of classes
+          rhsCtx.gadtState.addToConstraint(tparamSyms)
       if !tree.rhs.isEmpty && !sym.isInlineMethod && !sym.isEffectivelyErased then
         inContext(rhsCtx) { recheck(tree.rhs, recheck(tree.tpt)) }
 

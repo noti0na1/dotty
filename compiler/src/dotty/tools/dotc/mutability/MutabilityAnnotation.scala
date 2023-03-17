@@ -10,7 +10,6 @@ import Decorators.*
 import config.Printers.*
 import printing.Printer
 import printing.Texts.*
-import Mutability.*
 import MutabilityOps.*
 
 /** An annotation representing a mutability
@@ -18,15 +17,10 @@ import MutabilityOps.*
  *  These annotations are created during mutability checking. Before that
  *  there are only regular mutability annotations.
  */
-case class MutabilityAnnotation(mut: Mutability) extends Annotation:
+case class MutabilityAnnotation(mut: Type) extends Annotation:
   import tpd.*
 
-  override def tree(using Context) =
-    mut match
-      case Mutable => New(ref(defn.MutableAnnot))
-      case Polyread => New(ref(defn.PolyreadAnnot))
-      case Readonly => New(ref(defn.ReadonlyAnnot))
-      case Refs(_) => New(ref(defn.PolyreadAnnot))
+  override def tree(using Context) = New(ref(defn.MutAnnot))
       // TODO: why this doesn't work?
     //   case Refs(refs) =>
     //     val arg = defn.tupleType(refs.toList)
@@ -39,15 +33,11 @@ case class MutabilityAnnotation(mut: Mutability) extends Annotation:
     //     val constructor = New(AppliedTypeTree(ref(defn.RefmutAnnot), List(tupleTypeTree(argTree)))).select(nme.CONSTRUCTOR)
     //     TypeApply(constructor, List(TypeTree(arg)))
 
-  override def symbol(using Context) = mut match
-    case Mutable => defn.MutableAnnot
-    case Polyread => defn.PolyreadAnnot
-    case Refs(_) => defn.RefmutAnnot
-    case Readonly => defn.ReadonlyAnnot
+  override def symbol(using Context) = defn.MutAnnot
 
   override def derivedAnnotation(tree: Tree)(using Context): Annotation = this
 
-  def derivedAnnotation(mut: Mutability)(using Context): Annotation =
+  def derivedAnnotation(mut: Type)(using Context): Annotation =
     if this.mut eq mut then this
     else MutabilityAnnotation(mut)
 
@@ -56,9 +46,9 @@ case class MutabilityAnnotation(mut: Mutability) extends Annotation:
     case _ => false
 
   override def mapWith(tm: TypeMap)(using Context) =
-    derivedAnnotation(mut.map(tm))
+    derivedAnnotation(tm(mut))
 
-  override def toText(printer: Printer): Text = Str("@") ~ mut.toText(printer)
+  override def toText(printer: Printer): Text = Str("@mut[") ~ mut.toText(printer) ~ Str("]")
 
   override def eql(that: Annotation) = that match
     case that: MutabilityAnnotation => this.mut eq that.mut

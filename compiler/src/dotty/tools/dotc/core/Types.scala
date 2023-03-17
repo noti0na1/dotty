@@ -38,7 +38,6 @@ import java.lang.ref.WeakReference
 import compiletime.uninitialized
 import cc.{CapturingType, CaptureSet, derivedCapturingType, isBoxedCapturing, EventuallyCapturingType, boxedUnlessFun}
 import CaptureSet.{CompareResult, IdempotentCaptRefMap, IdentityCaptRefMap}
-import mutability.Mutability
 import mutability.MutabilityOps._
 import mutability.MutabilityType
 
@@ -370,10 +369,7 @@ object Types {
       case tp: LambdaType => tp.resultType.unusableForInference || tp.paramInfos.exists(_.unusableForInference)
       case WildcardType(optBounds) => optBounds.unusableForInference
       case CapturingType(parent, refs) => parent.unusableForInference || refs.elems.exists(_.unusableForInference)
-      case MutabilityType(parent, mut) => parent.unusableForInference || (mut match {
-        case Mutability.Refs(refs) => refs.exists(_.unusableForInference)
-        case _ => false
-      })
+      case MutabilityType(parent, mut) => parent.unusableForInference || mut.unusableForInference
       case _: ErrorType => true
       case _ => false
 
@@ -3852,9 +3848,8 @@ object Types {
                     case tp: TermParamRef if tp.binder eq thisLambdaType => combine(s, CaptureDeps)
                     case _ => s
                 }
-              case MutabilityType(parent, mut) => mut match
-                case Mutability.Mutable | Mutability.Readonly | Mutability.Polyread => compute(status, parent, theAcc)
-                case Mutability.Refs(refs) => refs.foldLeft(compute(status, tp.parent, theAcc))(compute(_, _, theAcc))
+              case MutabilityType(parent, mut) =>
+                compute(compute(status, tp.parent, theAcc), mut, theAcc)
               case _ =>
                 if tp.annot.refersToParamOf(thisLambdaType) then TrueDeps
                 else compute(status, tp.parent, theAcc)
@@ -5657,7 +5652,7 @@ object Types {
       tp.derivedAnnotatedType(underlying, annot)
     protected def derivedCapturingType(tp: Type, parent: Type, refs: CaptureSet): Type =
       tp.derivedCapturingType(parent, refs)
-    protected def derivedMutabilityType(tp: Type, parent: Type, mut: Mutability): Type =
+    protected def derivedMutabilityType(tp: Type, parent: Type, mut: Type): Type =
       tp.derivedMutabilityType(parent, mut)
     protected def derivedWildcardType(tp: WildcardType, bounds: Type): Type =
       tp.derivedWildcardType(bounds)
@@ -5739,7 +5734,7 @@ object Types {
           mapCapturingType(tp, parent, refs, variance)
 
         case tp @ MutabilityType(parent, mut) =>
-          derivedMutabilityType(tp, this(parent), mut.map(this))
+          derivedMutabilityType(tp, this(parent), this(mut))
 
         case tp @ AnnotatedType(underlying, annot) =>
           val underlying1 = this(underlying)
@@ -6088,7 +6083,7 @@ object Types {
         case _ =>
           tp.derivedCapturingType(parent, refs)
 
-    override protected def derivedMutabilityType(tp: Type, parent: Type, mut: Mutability): Type =
+    override protected def derivedMutabilityType(tp: Type, parent: Type, mut: Type): Type =
       parent match // TODO ^^^ handle ranges in capture sets as well
         case Range(lo, hi) =>
           range(derivedMutabilityType(tp, lo, mut), derivedMutabilityType(tp, hi, mut))
@@ -6255,10 +6250,8 @@ object Types {
       case CapturingType(parent, refs) =>
         (this(x, parent) /: refs.elems)(this)
 
-      case MutabilityType(parent, mut) => mut match
-        case Mutability.Mutable | Mutability.Readonly | Mutability.Polyread => this(x, parent)
-        case Mutability.Refs(refs) =>
-          refs.foldLeft(this(x, parent))(this)
+      case MutabilityType(parent, mut) =>
+        this(this(x, parent), mut)
 
       case AnnotatedType(underlying, annot) =>
         this(applyToAnnot(x, annot), underlying)
