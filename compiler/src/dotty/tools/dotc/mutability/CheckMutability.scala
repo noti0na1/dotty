@@ -54,6 +54,8 @@ class CheckMutability extends Recheck:
     private def isRegularMethod(sym: Symbol)(using Context): Boolean =
       sym.isRealMethod && !sym.isStatic && !sym.isConstructor
 
+    // private def showMutability(tp: Type)(using Context): String = ???
+
     /** Substitutes `@polyread` in `tp` with `@mut` */
     private def substPoly(tp: Type, mut: Type)(using Context): Type =
       // assert(mut <:< defn.ReadonlyType)
@@ -101,7 +103,7 @@ class CheckMutability extends Recheck:
       search(ctx.owner)
 
     override def recheckClassDef(tree: TypeDef, impl: Template, sym: ClassSymbol)(using Context): Type =
-      if sym.findMutability eq defn.ReadonlyType then
+      if sym.isReadonlyClass then
         sym.info.parents.foreach {
           case parent: TypeRef =>
             if !(parent.symbol == defn.ObjectClass || parent.symbol.isReadonlyClass) then
@@ -116,9 +118,9 @@ class CheckMutability extends Recheck:
       if !sym.is(Flags.Synthetic) && sym.owner.isReadonlyClass then
         if sym.is(Flags.Mutable) then
           report.error(i"A readonly class is not allow to have mutable field $sym", tree.srcPos)
-        if sym.info.computeMutability frozen_=:= defn.ReadonlyType then
-          println(i"${sym.owner} +> ${sym.owner.isReadonlyClass}")
-          report.error(i"Non-readonly field $sym with type ${sym.info} is not allowed in a readonly class", tree.srcPos)
+        val mut = sym.info.computeMutability
+        if !(mut frozen_=:= defn.ReadonlyType) then
+          report.error(i"Field $sym with type ${sym.info} and mutability ${mut} is not allowed in a readonly class", tree.srcPos)
       super.recheckValDef(tree, sym)
 
     override def recheckThis(tree: This, pt: Type)(using Context): Type =
@@ -189,17 +191,23 @@ class CheckMutability extends Recheck:
           // When multiple parameters have `@polyread`, we compute the max mutability of their arguments,
           // and subsitute the `@polyread` in the result type with the max mutability.
           var polyMut = defn.MutableType
+          val relaxedApply = tree.symbol.relaxApplyCheck
           def recheckArgs(args: List[Tree], formals: List[Type], prefs: List[ParamRef]): List[Type] = args match
             case arg :: args1 =>
-              val ftp = formals.head
-              var recheckFtp = ftp
-              if tree.symbol.relaxApplyCheck then
-                recheckFtp = MutabilityType(recheckFtp, defn.ReadonlyType)
-              val argType = recheck(arg, recheckFtp)
-              ftp match
-                case MutabilityType(_, fmut) if fmut.isRef(defn.PolyreadClass) =>
-                  polyMut = OrType(polyMut, argType.computeMutability, soft = false)
-                case _ =>
+              var hasPoly = false
+              val ftp = formals.head match
+                case MutabilityType(tp, fmut) if fmut.isRef(defn.PolyreadClass) =>
+                  hasPoly = true
+                  MutabilityType(tp, defn.ReadonlyType)
+                case tp =>
+                  if relaxedApply then
+                    MutabilityType(tp, defn.ReadonlyType)
+                  else tp
+
+              val argType = recheck(arg, ftp)
+
+              if hasPoly then polyMut = polyMut.union(argType.computeMutability)
+
               val formals1 =
                 if fntpe.isParamDependent
                 then formals.tail.map(_.substParam(prefs.head, argType))

@@ -1,4 +1,4 @@
-import scala.annotation.{readonly, polyread, mutable}
+import scala.mutability._
 
 class C:
 
@@ -8,17 +8,17 @@ class C:
 
   var i: Int = 0
 
-  // def f1(c: C) =
-  //   c.i = 1
+  def f1(c: C) =
+    c.i = 1
 
-  //   c.s.i = 2
-  //   c.t.i = 2 // error
+    c.s.i = 2
+    c.t.i = 2 // error
 
-  //   c.s.s.i = 3
-  //   c.s.t.i = 3 // error
+    c.s.s.i = 3
+    c.s.t.i = 3 // error
 
-  //   c.t.s.i = 3 // error
-  //   c.t.t.i = 3 // error
+    c.t.s.i = 3 // error
+    c.t.t.i = 3 // error
 
   def f2(c: C @readonly) =
     c.i = 1 // error

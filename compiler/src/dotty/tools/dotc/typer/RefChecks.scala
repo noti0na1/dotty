@@ -544,7 +544,6 @@ object RefChecks {
         overrideError("cannot be used here - only Scala-2 macros can override Scala-2 macros")
       else if (!compatTypes(memberTp(self), otherTp(self)) &&
                  !compatTypes(memberTp(upwardsSelf), otherTp(upwardsSelf)))
-        println(s"incompatible:: memberTp = ${memberTp(self)}, otherTp = ${otherTp(self)}")
         overrideError("has incompatible type", compareTypes = true)
       else if (!compatMutability)
         overrideError(i"the receiver mutability is incompatible")

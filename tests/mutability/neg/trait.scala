@@ -1,4 +1,4 @@
-import scala.annotation.{readonly, polyread, mutable}
+import scala.mutability._
 
 class Trans[A, C[A]]:
   @polyread

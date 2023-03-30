@@ -1,4 +1,4 @@
-import scala.annotation.{readonly, polyread, mutable}
+import scala.mutability._
 
 class C:
   def f1(x: C): C = ???

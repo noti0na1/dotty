@@ -24,6 +24,9 @@ object MutabilityOps:
             case Apply(TypeApply(_, List(tptree: TypeTree)), _) =>
               Some(tptree.tpe)
             case _ => None
+        else if annot.symbol == defn.ReadonlyClass then Some(defn.ReadonlyType)
+        else if annot.symbol == defn.PolyreadClass then Some(defn.PolyreadType)
+        else if annot.symbol == defn.MutableClass then Some(defn.MutableType)
         else None
 
   extension (tp: Type)
@@ -59,36 +62,21 @@ object MutabilityOps:
           val tp2Mut = recur(tp.tp2)
           tp1Mut.union(tp2Mut)
         case tp: NamedType =>
-          tp.info match
-            case TypeBounds(lo, hi) =>
-              val loMut = recur(lo)
-              val hiMut = recur(hi)
-              if loMut =:= hiMut then loMut
-              else
-                report.error(i"$tp has different mutability bounds $loMut and $hiMut")
-                NoType
-            case info => recur(info)
+          if tp.symbol.isClass then
+            if tp.symbol.isReadonlyClass then defn.ReadonlyType else defn.MutableType
+          else recur(tp.info)
         case tp: TypeParamRef =>
-          TypeComparer.bounds(tp) match
-            case TypeBounds(lo, hi) =>
-              val loMut = recur(lo)
-              val hiMut = recur(hi)
-              if loMut =:= hiMut then loMut
-              else
-                report.error(i"$tp has different mutability bounds $loMut and $hiMut")
-                NoType
-        case tp: SingletonType =>
-          recur(tp.underlying)
-        case tp: ExprType =>
-          recur(tp.resType)
+          recur(TypeComparer.bounds(tp))
         case tp: MatchType =>
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
-          else defn.MutableType
-        case tp: ClassInfo =>
-          // println(i"computeMutability: $tp, ${tp.classSymbol.isReadonlyClass}")
-          if tp.classSymbol.isReadonlyClass then defn.ReadonlyType else defn.MutableType
+          else recur(tp.bound)
+        case tp: TypeProxy =>
+          recur(tp.underlying)
+        case tp: WildcardType =>
+          recur(tp.optBounds)
         case _ =>
+          // println(i"computeMutability unhandled: $tp")
           defn.MutableType
       recur(tp)
 
@@ -116,6 +104,8 @@ object MutabilityOps:
       || sym == defn.CharSequenceClass
       || sym == defn.StringClass
       || sym == defn.Mirror_SingletonClass
+      || sym == defn.Mirror_ProductClass
+      // || sym == defn.Mirror_SumClass
       || sym == defn.EqualsClass
       || sym == defn.ProductClass
       || sym == defn.SerializableClass
@@ -124,7 +114,6 @@ object MutabilityOps:
       || sym == defn.RuntimeExceptionClass
       || sym == defn.ScalaStaticsModuleClass
       || sym == defn.ConversionClass
-      || sym == defn.Mirror_SingletonClass
       || defn.isFunctionSymbol(sym)
       || sym.isClass && (sym.findMutability.isRef(defn.ReadonlyClass))
 

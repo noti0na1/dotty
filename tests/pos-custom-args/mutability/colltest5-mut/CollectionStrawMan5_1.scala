@@ -109,7 +109,7 @@ object CollectionStrawMan5 {
   trait SeqLike[+A, +C[X] <: Seq[X]]
   extends IterableLike[A, C] with SeqMonoTransforms[A, C[A @uncheckedVariance]] // sound bcs of VarianceNote
 
-  trait IterableOps[+A] extends Any {
+  trait IterableOps[+A] {
     @readonly
     def iterator: Iterator[A]
     @readonly
@@ -128,7 +128,7 @@ object CollectionStrawMan5 {
     def view: View[A] @readonly = View.fromIterator(iterator)
   }
 
-  trait IterableMonoTransforms[+A, +Repr] extends Any {
+  trait IterableMonoTransforms[+A, +Repr] {
     @readonly
     protected def coll: Iterable[A] @readonly
     @readonly
@@ -149,7 +149,7 @@ object CollectionStrawMan5 {
       fi.fromIterable(coll)
   }
 
-  trait IterablePolyTransforms[+A, +C[A]] extends Any {
+  trait IterablePolyTransforms[+A, +C[A]] {
     @readonly
     protected def coll: Iterable[A] @readonly
     @readonly
@@ -165,7 +165,7 @@ object CollectionStrawMan5 {
        // sound bcs of VarianceNote
   }
 
-  trait SeqMonoTransforms[+A, +Repr] extends Any with IterableMonoTransforms[A, Repr] {
+  trait SeqMonoTransforms[+A, +Repr] extends IterableMonoTransforms[A, Repr] {
     @readonly
     def reverse: Repr @readonly = {
       var xs: List[A] = Nil

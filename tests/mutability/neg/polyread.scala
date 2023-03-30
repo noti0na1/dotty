@@ -1,4 +1,4 @@
-import scala.annotation.{readonly, polyread, mutable}
+import scala.mutability._
 
 class C:
   val x: C = ???
@@ -37,7 +37,7 @@ def test = {
   val cf2_3: C = c2.f2(x2) // error
   val cf2_4: C @readonly = c2.f2(x2)
 
-  def c2f2fn = c2.f2
+  def c2f2fn: String => C @readonly = c2.f2
   val c2f2appfn_1: C = c2f2fn(x1) // error
   val c2f2appfn_2: C = c2f2fn(x2) // error
 

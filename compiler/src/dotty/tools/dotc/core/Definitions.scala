@@ -1050,16 +1050,13 @@ class Definitions {
   @tu lazy val JavaRepeatableAnnot: ClassSymbol = requiredClass("java.lang.annotation.Repeatable")
 
   // Mutability
-  @tu lazy val MutableClass: ClassSymbol = requiredClass("scala.mutability.Mutable")
+  @tu lazy val MutableClass: ClassSymbol = requiredClass("scala.mutability.mutable")
   def MutableType: Type = MutableClass.typeRef
-  @tu lazy val PolyreadClass: ClassSymbol = requiredClass("scala.mutability.Polyread")
-  def PolyreadType: Type = MutableClass.typeRef
-  @tu lazy val ReadonlyClass: ClassSymbol = requiredClass("scala.mutability.Readonly")
-  def ReadonlyType: Type = MutableClass.typeRef
+  @tu lazy val PolyreadClass: ClassSymbol = requiredClass("scala.mutability.polyread")
+  def PolyreadType: Type = PolyreadClass.typeRef
+  @tu lazy val ReadonlyClass: ClassSymbol = requiredClass("scala.mutability.readonly")
+  def ReadonlyType: Type = ReadonlyClass.typeRef
 
-  // @tu lazy val MutableAnnot: ClassSymbol = requiredClass("scala.mutability.mutable")
-  // @tu lazy val PolyreadAnnot: ClassSymbol = requiredClass("scala.mutability.polyread")
-  // @tu lazy val ReadonlyAnnot: ClassSymbol = requiredClass("scala.mutability.readonly")
   @tu lazy val MutAnnot: ClassSymbol = requiredClass("scala.mutability.mut")
 
   // A list of meta-annotations that are relevant for fields and accessors

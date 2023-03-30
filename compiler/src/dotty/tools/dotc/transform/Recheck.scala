@@ -231,17 +231,29 @@ abstract class Recheck extends Phase, SymTransformer:
       if !tree.rhs.isEmpty then recheck(tree.rhs, sym.info)
 
     def recheckDefDef(tree: DefDef, sym: Symbol)(using Context): Unit =
-      val rhsCtx = linkConstructorParams(sym).withOwner(sym)
+      var rhsCtx = ctx.fresh
       val tparamss = tree.paramss.collect { case TypeDefs(tparams) => tparams }
+
+      if sym.flags.is(Method) then
+        rhsCtx.setFreshGADTBounds
+        ctx.outer.outersIterator.takeWhile(!_.owner.is(Method))
+          .filter(ctx => ctx.owner.isClass && ctx.owner.typeParams.nonEmpty)
+          .toList.reverse
+          .foreach(ctx => rhsCtx.gadtState.addToConstraint(ctx.owner.typeParams))
+
       if tparamss.nonEmpty then
+        rhsCtx.setFreshGADTBounds
         val tparamSyms = tparamss.flatten.map(_.symbol)
         if !sym.isConstructor then
           // we're typing a polymorphic definition's body,
           // so we allow constraining all of its type parameters
           // constructors are an exception as we don't allow constraining type params of classes
           rhsCtx.gadtState.addToConstraint(tparamSyms)
+        else if !sym.isPrimaryConstructor then
+          linkConstructorParams(sym, tparamSyms, rhsCtx)
+
       if !tree.rhs.isEmpty && !sym.isInlineMethod && !sym.isEffectivelyErased then
-        inContext(rhsCtx) { recheck(tree.rhs, recheck(tree.tpt)) }
+        inContext(rhsCtx.withOwner(sym)) { recheck(tree.rhs, recheck(tree.tpt)) }
 
     def recheckTypeDef(tree: TypeDef, sym: Symbol)(using Context): Type =
       recheck(tree.rhs)
