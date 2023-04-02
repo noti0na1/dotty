@@ -71,6 +71,17 @@ object MutabilityOps:
           val tp1 = tp.reduced
           if tp1.exists then recur(tp1)
           else recur(tp.bound)
+        case tp: TypeBounds =>
+          // In theory, we would expect the upper and lower bounds have the same mutability,
+          // then we only need to compute mutability of one side.
+          // However, if one side is left open (Any or Nothing), the other side may
+          // have a different mutability.
+          // For example, `T >: C @readonly`, in this case, the lower bound is readonly,
+          // but the upper bound is mutable.
+          // The best we can do is to handle the bound specifically when another side is `Nothing` or `Any`.
+          if tp.hi.isRef(defn.AnyClass) then recur(tp.lo)
+          else if tp.lo.isRef(defn.NothingClass) then recur(tp.hi)
+          else recur(tp.hi)
         case tp: TypeProxy =>
           recur(tp.underlying)
         case tp: WildcardType =>

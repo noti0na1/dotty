@@ -142,5 +142,5 @@ object Mode {
    */
   val RelaxedOverriding: Mode = newMode(30, "RelaxedOverriding")
 
-  val IgnoreMutability: Mode = newMode(31, "IgnoreMutability")
+  // val IgnoreMutability: Mode = newMode(31, "IgnoreMutability")
 }

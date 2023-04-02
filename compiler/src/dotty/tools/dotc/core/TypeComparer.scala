@@ -68,6 +68,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   protected var ignoreMutability: Boolean = false
 
+  protected var compareMutability: Boolean = false
+
   private var myInstance: TypeComparer = this
   def currentInstance: TypeComparer = myInstance
 
@@ -185,6 +187,18 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
    */
   val startSameTypeTrackingLevel = 3
 
+  private inline def ignoringMutability[T](op: => T): T = {
+    val saved = ignoreMutability
+    ignoreMutability = true
+    try op finally ignoreMutability = saved
+  }
+
+  private inline def comparingMutability[T](op: => T): T = {
+    val saved = compareMutability
+    compareMutability = true
+    try op finally compareMutability = saved
+  }
+
   private inline def inFrozenGadtIf[T](cond: Boolean)(inline op: T): T = {
     val savedFrozenGadt = frozenGadt
     frozenGadt ||= cond
@@ -219,7 +233,12 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
     this.tp1OuterMut = defn.MutableType
     this.tp2OuterMut = defn.MutableType
 
-    try checkMutability(tp1, tp2) && recur(tp1, tp2)
+    val savedIgnoreMutability = this.ignoreMutability
+
+    try checkMutability(tp1, tp2) && {
+      this.ignoreMutability = false
+      recur(tp1, tp2)
+    }
     catch {
       case ex: Throwable => handleRecursive("subtype", i"$tp1 <:< $tp2", ex, weight = 2)
     }
@@ -228,6 +247,7 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       this.leftRoot = savedLeftRoot
       this.tp1OuterMut = savedTp1OuterMut
       this.tp2OuterMut = savedTp2OuterMut
+      this.ignoreMutability = savedIgnoreMutability
     }
   }
 
@@ -235,8 +255,9 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
 
   override protected def isSub(tp1: Type, tp2: Type)(using Context): Boolean = isSubType(tp1, tp2)
 
-  protected def checkMutability(tp1: Type, tp2: Type): Boolean = {
+  protected def checkMutability(tp1: Type, tp2: Type): Boolean =
     if !isCheckingMutability
+      || compareMutability
       || ignoreMutability
       || tp2.isAny
       || tp2.isInstanceOf[ProtoType]
@@ -244,19 +265,11 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
       || tp1.isInstanceOf[TypeBounds] && tp2.isInstanceOf[TypeBounds]
       then return true
 
-    val ignore = this.ignoreMutability
-    this.ignoreMutability = true
-    try {
-      tp1OuterMut = tp1.computeMutability
-      tp2OuterMut = tp2.computeMutability
-      val r = isSubType(tp1OuterMut, tp2OuterMut)
-      // println(i"check mutability ($frozenConstraint) $tp1 ($tp1OuterMut) <:< $tp2 ($tp2OuterMut) = $r")
-      r
-    }
-    finally {
-      this.ignoreMutability = ignore
-    }
-  }
+    tp1OuterMut = tp1.computeMutability
+    tp2OuterMut = tp2.computeMutability
+    val r = comparingMutability(isSubType(tp1OuterMut, tp2OuterMut))
+    // println(i"check mutability ($frozenConstraint) $tp1 ($tp1OuterMut) <:< $tp2 ($tp2OuterMut) = $r")
+    r
 
   /** The inner loop of the isSubType comparison.
    *  Recursive calls from recur should go to recur directly if the two types
@@ -474,12 +487,14 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
               case tp2a: TypeParamRef => constraint.isLess(tp1, tp2a)
               case tp2a: AndType => recur(tp1, tp2a)
               case _ => false
-          || {
-            val tp1HiMut = bounds(tp1).hi.computeMutability
-            isSubTypeWhenFrozen(
-              MutabilityType(bounds(tp1).hi.boxed, tp1OuterMut),
-              MutabilityType(tp2, OrType(tp2OuterMut, tp1HiMut, soft = false)))
-          } || (if canConstrain(tp1) && !approx.high then
+          // || {
+          //   val tp1HiMut = bounds(tp1).hi.computeMutability
+          //   isSubTypeWhenFrozen(
+          //     MutabilityType(bounds(tp1).hi.boxed, tp1OuterMut),
+          //     MutabilityType(tp2, OrType(tp2OuterMut, tp1HiMut, soft = false)))
+          // }
+          || ignoringMutability(isSubTypeWhenFrozen(bounds(tp1).hi.boxed, tp2))
+          || (if canConstrain(tp1) && !approx.high then
                 addConstraint(tp1, tp2, fromBelow = false) && flagNothingBound
               else thirdTry)
 
@@ -610,12 +625,16 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             || narrowGADTBounds(tp2, tp1, approx, isUpper = false))
           && (isBottom(tp1) || GADTusage(tp2.symbol))
 
-        {
-          val approxHiMut = OrType(info2.lo.computeMutability, tp2OuterMut, soft = false)
-          isSubApproxHi(MutabilityType(tp1, approxHiMut), MutabilityType(info2.lo.boxedIfTypeParam(tp2.symbol), tp2OuterMut))
-        } && {
-          val approxHiMut = OrType(info2.hi.computeMutability, tp2OuterMut, soft = false)
-          trustBounds || isSubApproxHi(MutabilityType(tp1, approxHiMut),  MutabilityType(info2.hi, tp2OuterMut))
+        // {
+        //   val approxHiMut = OrType(info2.lo.computeMutability, tp2OuterMut, soft = false)
+        //   isSubApproxHi(MutabilityType(tp1, approxHiMut), MutabilityType(info2.lo.boxedIfTypeParam(tp2.symbol), tp2OuterMut))
+        // } && {
+        //   val approxHiMut = OrType(info2.hi.computeMutability, tp2OuterMut, soft = false)
+        //   trustBounds || isSubApproxHi(MutabilityType(tp1, approxHiMut),  MutabilityType(info2.hi, tp2OuterMut))
+        // }
+        ignoringMutability {
+          isSubApproxHi(tp1, info2.lo.boxedIfTypeParam(tp2.symbol))
+          && (trustBounds || isSubApproxHi(tp1, info2.hi))
         }
         || compareGADT
         || tryLiftedToThis2
@@ -934,21 +953,24 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           case info1 @ TypeBounds(lo1, hi1) =>
             def compareGADT =
               tp1.symbol.onGadtBounds(gbounds1 =>
-                isSubTypeWhenFrozen(MutabilityType(gbounds1.hi, tp1OuterMut), MutabilityType(tp2, tp2OuterMut))
+                // isSubTypeWhenFrozen(MutabilityType(gbounds1.hi, tp1OuterMut), MutabilityType(tp2, tp2OuterMut))
+                ignoringMutability(isSubTypeWhenFrozen(gbounds1.hi, tp2))
                 || narrowGADTBounds(tp1, tp2, approx, isUpper = true))
               && (tp2.isAny || GADTusage(tp1.symbol))
 
+            // (!caseLambda.exists || canWidenAbstract)
+            //     && {
+            //       val approxLowMut = OrType(hi1.computeMutability, tp1OuterMut, soft = false)
+            //       isSubType(
+            //         MutabilityType(hi1.boxedIfTypeParam(tp1.symbol), tp1OuterMut),
+            //         MutabilityType(tp2, approxLowMut),
+            //         approx.addLow)
+            //     } && {
+            //       val approxLowMut = OrType(lo1.computeMutability, tp1OuterMut, soft = false)
+            //       trustBounds || isSubType(MutabilityType(lo1, tp1OuterMut), MutabilityType(tp2, approxLowMut), approx.addLow)
+            //     }
             (!caseLambda.exists || canWidenAbstract)
-                && {
-                  val approxLowMut = OrType(hi1.computeMutability, tp1OuterMut, soft = false)
-                  isSubType(
-                    MutabilityType(hi1.boxedIfTypeParam(tp1.symbol), tp1OuterMut),
-                    MutabilityType(tp2, approxLowMut),
-                    approx.addLow)
-                } && {
-                  val approxLowMut = OrType(lo1.computeMutability, tp1OuterMut, soft = false)
-                  trustBounds || isSubType(MutabilityType(lo1, tp1OuterMut), MutabilityType(tp2, approxLowMut), approx.addLow)
-                }
+                && ignoringMutability(isSubType(hi1.boxedIfTypeParam(tp1.symbol), tp2, approx.addLow) && (trustBounds || isSubType(lo1, tp2, approx.addLow)))
             || compareGADT
             || tryLiftedToThis1
           case _ =>
@@ -995,7 +1017,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             case _ =>
               tp1w
 
-        comparePaths || isSubType(MutabilityType(tp1widened, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow)
+        // comparePaths || isSubType(MutabilityType(tp1widened, tp1OuterMut), MutabilityType(tp2, tp2OuterMut), approx.addLow)
+        comparePaths || ignoringMutability(isSubType(tp1widened, tp2, approx.addLow))
       case tp1: RefinedType =>
         isNewSubType(tp1.parent)
       case tp1: RecType =>
