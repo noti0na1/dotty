@@ -52,7 +52,7 @@ class CheckMutability extends Recheck:
     import ast.tpd.*
 
     private def isRegularMethod(sym: Symbol)(using Context): Boolean =
-      sym.isRealMethod && !sym.isStatic && !sym.isConstructor
+      sym.isRealMethod && !sym.isStatic // && !sym.isConstructor
 
     // private def showMutability(tp: Type)(using Context): String = ???
 
@@ -91,12 +91,19 @@ class CheckMutability extends Recheck:
     def getMutabilityFromEnclosing(tree: Tree)(using Context): Type =
       val cs = tree.symbol
 
-      // Search from the ctx.owner until we find a method
+      // Search from the ctx.owner until we find a member
       // whose class symbol is same as the tree.
       @tailrec def search(sym: Symbol): Type =
         if sym == NoSymbol then defn.MutableType
+        // find the member of the class
         else if sym.owner == cs then
-          if isRegularMethod(sym) then sym.findMutability else defn.MutableType
+          // if the member is a method, the mutability of the `this` reference is dependent on the annotation
+          if isRegularMethod(sym) then sym.findMutability
+          // if the field is lazy or annotated as `mutable`, the mutability should be `Readonly`,
+          // since the field should not modify other part of the object.
+          else if sym.isField && (sym.is(Flags.Lazy) || sym.hasMutableAnnotation)
+          then defn.ReadonlyType
+          else defn.MutableType
         else if sym.exists then search(sym.owner)
         else defn.MutableType
 
@@ -167,7 +174,7 @@ class CheckMutability extends Recheck:
         // Check method selection `x.f(...)`,
         // the mutability of x must be less than or equal to the mutability of `f`.
         if isRegularMethod(mbrSym) then
-          val mbrMut = mbrSym.findMutability
+          val mbrMut = mbrSym.findMutability.asSeenFrom(qualType, mbrSym.owner)
           if mbrMut.isRef(defn.PolyreadClass) then
             return substPoly(selType.widen, qualMut)
           else if !(qualMut <:< mbrMut) && !mbrSym.relaxApplyCheck then
@@ -175,7 +182,7 @@ class CheckMutability extends Recheck:
 
         // When selecting on a field, the mutability will be at least the mutability of the qualifier.
         // For example, if `p` is readonly, then the type of `p.x` will be `p.x.type @readonly`.
-        if mbrSym.isField && !mbrSym.owner.isReadonlyClass then
+        if mbrSym.isField && !(mbrSym.owner.isReadonlyClass || mbrSym.hasMutableAnnotation) then
           MutabilityType(selType, qualMut)
         else
           selType

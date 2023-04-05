@@ -93,6 +93,26 @@ object MutabilityOps:
 
   extension (sym: Symbol)
 
+    def findMutabilityAnnotation(using Context): Option[Type] =
+      def recur(annots: List[Annotation]): Option[Type] =
+        annots match
+          case Nil => None
+          case annot :: annots =>
+            val mut = annot.getMutability
+            if mut.isDefined then mut
+            else recur(annots)
+      recur(sym.annotations)
+
+    def hasMutableAnnotation(using Context): Boolean =
+      sym.findMutabilityAnnotation match
+        case Some(mut) => mut eq defn.MutableType
+        case None => false
+
+    def hasReadonlyAnnotation(using Context): Boolean =
+      sym.findMutabilityAnnotation match
+        case Some(mut) => mut eq defn.ReadonlyType
+        case None => false
+
     def findMutability(using Context): Type =
       def recur(annots: List[Annotation]): Type =
         annots match
@@ -134,6 +154,7 @@ object MutabilityOps:
       || defn.pureMethods.contains(sym)
       || owner == defn.ScalaStaticsModuleClass
       || owner == defn.OptionClass
+      || owner == defn.StringClass
       || sym == defn.Any_asInstanceOf
       || sym == defn.Any_typeCast
       || sym == defn.Array_apply
