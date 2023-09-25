@@ -298,6 +298,7 @@ object StdNames {
     val ROOTPKG: N                  = "_root_"
     val SELF: N                     = "$this"
     val SKOLEM: N                   = "<skolem>"
+    val FLEXIBLE: N                 = "<flexible>"
     val TRAIT_CONSTRUCTOR: N        = "$init$"
     val TRY_BLOCK: N                = "<try block>"
     val THROWS: N                   = "$throws"

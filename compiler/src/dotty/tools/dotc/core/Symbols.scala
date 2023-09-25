@@ -789,6 +789,9 @@ object Symbols {
   def newSkolem(tp: Type)(using Context): TermSymbol =
     newSymbol(defn.RootClass, nme.SKOLEM, SyntheticArtifact | NonMember | Permanent, tp)
 
+  def newFlexible(tp: Type)(using Context): TermSymbol =
+    newSymbol(defn.RootClass, nme.FLEXIBLE, SyntheticArtifact | NonMember | Permanent, tp)
+
   def newErrorSymbol(owner: Symbol, name: Name, msg: Message)(using Context): Symbol = {
     val errType = ErrorType(msg)
     newSymbol(owner, name, SyntheticArtifact,

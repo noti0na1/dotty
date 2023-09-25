@@ -5355,6 +5355,22 @@ object Types {
       if (alias eq this.alias) this else MatchAlias(alias)
   }
 
+  class FlexibleTypeBounds(val original: Type, lo: Type, hi: Type) extends TypeBounds(lo, hi) {
+    override def underlying(using Context): Type = original
+
+    override def computeHash(bs: Binders): Int = original.hash
+    override def hashIsStable: Boolean = original.hashIsStable
+
+    override def iso(that: Any, bs: BinderPairs): Boolean = that match {
+      case that: FlexibleTypeBounds => original.equals(that.original, bs)
+      case _ => false
+    }
+    override def eql(that: Type): Boolean = that match {
+      case that: FlexibleTypeBounds => original.eq(that.original)
+      case _ => false
+    }
+  }
+
   object TypeBounds {
     def apply(lo: Type, hi: Type)(using Context): TypeBounds =
       unique(new RealTypeBounds(lo, hi))
@@ -5382,6 +5398,18 @@ object Types {
   object MatchAlias {
     def apply(alias: Type)(using Context): MatchAlias = unique(new MatchAlias(alias))
     def unapply(tp: MatchAlias): Option[Type] = Some(tp.alias)
+  }
+
+  object FlexibleType {
+    def apply(underlying: Type)(using Context): TypeRef =
+      val hi = underlying.stripNull
+      val lo = if hi eq underlying then OrNull(underlying) else underlying
+      val bound = unique(new FlexibleTypeBounds(underlying, lo, hi))
+      TypeRef(NoPrefix, newFlexible(bound))
+
+    def unapply(tp: TypeRef)(using Context): Option[Type] = tp.info match
+      case bound: FlexibleTypeBounds if tp.name == nme.FLEXIBLE => Some(bound.original)
+      case _ => None
   }
 
   // ----- Annotated and Import types -----------------------------------------------

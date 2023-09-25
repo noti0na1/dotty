@@ -186,6 +186,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
         toTextRef(tp) ~ ".type"
       case tp: TermRef if tp.denot.isOverloaded =>
         "<overloaded " ~ toTextRef(tp) ~ ">"
+      case FlexibleType(tpe) =>
+        "FlexibleType(" ~ toText(tpe) ~ ")"
       case tp: TypeRef =>
         if (printWithoutPrefix.contains(tp.symbol))
           toText(tp.name)

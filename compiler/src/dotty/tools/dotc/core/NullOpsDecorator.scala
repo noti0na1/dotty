@@ -42,6 +42,13 @@ object NullOpsDecorator:
       if ctx.explicitNulls then strip(self) else self
     }
 
+    def stripFlexible(using Context): Type = {
+      self match {
+        case FlexibleType(tp) => tp
+        case _ => self
+      }
+    }
+
     /** Is self (after widening and dealiasing) a type of the form `T | Null`? */
     def isNullableUnion(using Context): Boolean = {
       val stripped = self.stripNull
