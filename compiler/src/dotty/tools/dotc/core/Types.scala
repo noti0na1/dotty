@@ -348,6 +348,7 @@ object Types extends TypeUtils {
       case tp: ClassInfo => !tp.cls.isNullableClass && tp.cls != defn.NothingClass
       case tp: AppliedType => tp.superType.isNotNull
       case tp: TypeBounds => tp.lo.isNotNull
+      case tp: FlexibleType => tp.lo.isNotNull
       case tp: TypeProxy => tp.underlying.isNotNull
       case AndType(tp1, tp2) => tp1.isNotNull || tp2.isNotNull
       case OrType(tp1, tp2) => tp1.isNotNull && tp2.isNotNull
@@ -374,6 +375,7 @@ object Types extends TypeUtils {
       case AppliedType(tycon, args) => tycon.unusableForInference || args.exists(_.unusableForInference)
       case RefinedType(parent, _, rinfo) => parent.unusableForInference || rinfo.unusableForInference
       case TypeBounds(lo, hi) => lo.unusableForInference || hi.unusableForInference
+      case tp: FlexibleType => tp.original.unusableForInference
       case tp: AndOrType => tp.tp1.unusableForInference || tp.tp2.unusableForInference
       case tp: LambdaType => tp.resultType.unusableForInference || tp.paramInfos.exists(_.unusableForInference)
       case WildcardType(optBounds) => optBounds.unusableForInference
@@ -3398,6 +3400,26 @@ object Types extends TypeUtils {
     }
   }
 
+  // --- FlexibleType -----------------------------------------------------------------
+
+  /* Represents a type proxy with a special type bound.
+   * `FromJavaObject` can be represented as a flexible type,
+   * with lower bound being `AnyType` and upper bound being `ObjectType`.
+   */
+  case class FlexibleType(original: Type, lo: Type, hi: Type) extends CachedProxyType with ValueType {
+    def underlying(using Context): Type = original
+
+    override def superType(using Context): Type = hi
+
+    def derivedFlexibleType(original: Type, lo: Type, hi: Type)(using Context): Type =
+      if (original eq this.original) && (lo eq this.lo) && (hi eq this.hi) then this
+      else FlexibleType(original, lo, hi)
+
+    override def computeHash(bs: Binders): Int = doHash(bs, original, lo, hi)
+
+    override final def baseClasses(using Context): List[ClassSymbol] = original.baseClasses
+  }
+
   // --- AndType/OrType ---------------------------------------------------------------
 
   abstract class AndOrType extends CachedGroundType with ValueType {
@@ -5880,6 +5902,8 @@ object Types extends TypeUtils {
         samClass(tp.underlying)
       case tp: AnnotatedType =>
         samClass(tp.underlying)
+      case tp: FlexibleType =>
+        samClass(tp.superType)
       case _ =>
         NoSymbol
 
@@ -5990,6 +6014,8 @@ object Types extends TypeUtils {
       tp.derivedSuperType(thistp, supertp)
     protected def derivedAppliedType(tp: AppliedType, tycon: Type, args: List[Type]): Type =
       tp.derivedAppliedType(tycon, args)
+    protected def derivedFlexibleType(tp: FlexibleType, original: Type, lo: Type, hi: Type): Type =
+      tp.derivedFlexibleType(original, lo, hi)
     protected def derivedAndType(tp: AndType, tp1: Type, tp2: Type): Type =
       tp.derivedAndType(tp1, tp2)
     protected def derivedOrType(tp: OrType, tp1: Type, tp2: Type): Type =
@@ -6126,6 +6152,9 @@ object Types extends TypeUtils {
 
         case tp: ClassInfo =>
           mapClassInfo(tp)
+
+        case tp: FlexibleType =>
+          derivedFlexibleType(tp, this(tp.original), this(tp.lo), this(tp.hi))
 
         case tp: AndType =>
           derivedAndType(tp, this(tp.tp1), this(tp.tp2))
@@ -6404,6 +6433,13 @@ object Types extends TypeUtils {
       case Range(lo, hi) => !lo.isInstanceOf[TermType] || !hi.isInstanceOf[TermType]
       case _             => false
 
+    override protected def derivedFlexibleType(tp: FlexibleType, original: Type, lo: Type, hi: Type): Type =
+      original match
+        case Range(lo1, hi1) =>
+          range(derivedFlexibleType(tp, lo1, lo, hi), derivedFlexibleType(tp, hi1, lo, hi))
+        case _ =>
+          tp.derivedFlexibleType(original, lo, hi)
+
     override protected def derivedAndType(tp: AndType, tp1: Type, tp2: Type): Type =
       if (isRange(tp1) || isRange(tp2)) range(lower(tp1) & lower(tp2), upper(tp1) & upper(tp2))
       else tp.derivedAndType(tp1, tp2)
@@ -6572,6 +6608,9 @@ object Types extends TypeUtils {
           variance = -variance
           this(y, hi)
         }
+
+      case tp: FlexibleType =>
+        this(this(x, tp.lo), tp.hi)
 
       case tp: AndType =>
         this(this(x, tp.tp1), tp.tp2)
