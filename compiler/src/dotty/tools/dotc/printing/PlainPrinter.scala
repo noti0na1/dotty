@@ -311,6 +311,8 @@ class PlainPrinter(_ctx: Context) extends Printer {
         "LazyRef(" ~ refTxt ~ ")"
       case Range(lo, hi) =>
         toText(lo) ~ ".." ~ toText(hi)
+      case FlexibleType(tpe, lo, hi) =>
+         "(" ~ toText(tpe) ~ ")?"
       case _ =>
         tp.fallbackToText(this)
     }

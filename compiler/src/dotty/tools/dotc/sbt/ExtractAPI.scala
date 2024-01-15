@@ -560,6 +560,8 @@ private class ExtractAPICollector(using Context) extends ThunkHolder {
         // `recType` would lead to an infinite recursion, we avoid this by
         //  computing the representation of `recType` lazily.
         apiLazy(recType)
+      case tp: FlexibleType =>
+        apiType(tp.original)
       case tp: AndType =>
         combineApiTypes(apiType(tp.tp1), apiType(tp.tp2))
       case tp: OrType =>

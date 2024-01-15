@@ -421,7 +421,8 @@ class Definitions {
    *  display it.
    */
   @tu lazy val FromJavaObjectSymbol: TypeSymbol =
-    newPermanentSymbol(OpsPackageClass, tpnme.FromJavaObject, JavaDefined, TypeAlias(ObjectType)).entered
+    newPermanentSymbol(OpsPackageClass, tpnme.FromJavaObject, JavaDefined,
+      TypeAlias(FlexibleType(ObjectType, AnyType, ObjectType))).entered
   def FromJavaObjectType: TypeRef = FromJavaObjectSymbol.typeRef
 
   @tu lazy val AnyRefAlias: TypeSymbol = enterAliasType(tpnme.AnyRef, ObjectType)

@@ -864,6 +864,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
             false
         }
         compareClassInfo
+      case tp2: FlexibleType =>
+        recur(tp1, tp2.lo)
       case _ =>
         fourthTry
     }
@@ -1006,6 +1008,8 @@ class TypeComparer(@constructorOnly initctx: Context) extends ConstraintHandling
           }
         }
         compareHKLambda
+      case tp1: FlexibleType =>
+        recur(tp1.hi, tp2)
       case tp1 @ AndType(tp11, tp12) =>
         val tp2a = tp2.dealiasKeepRefiningAnnots
         if (tp2a ne tp2) // Follow the alias; this might avoid truncating the search space in the either below
