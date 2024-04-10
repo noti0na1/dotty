@@ -687,7 +687,12 @@ object CheckUnused:
         val selectionsToDealias = typeSelections ::: termSelections
         val renamedSelection = if sameTermPath then sels.find(sel => sel.imported.name == sym.name) else None
         val qualHasSymbol = simpleSelections.map(_.symbol).contains(sym) || (simpleSelections ::: selectionsToDealias).map(_.symbol).map(dealias).contains(dealiasedSym) || renamedSelection.isDefined
-        def selector = sels.find(sel => (sel.name.toTermName == sym.name || sel.name.toTypeName == sym.name) && symName.map(n => n.toTermName == sel.rename).getOrElse(true))
+        // For renamed imported terms, we only get the original names at usage locations,
+        // so we have to compare symName with the original and renamed names of the selector.
+        def selector = sels.find(sel =>
+          (sel.name.toTermName == sym.name || sel.name.toTypeName == sym.name)
+          && symName.map(n => n.toTermName == sel.name || n.toTermName == sel.rename).getOrElse(true))
+        println(s"Selector check: ${sym.name} ${symName} $sels ${selector}")
         def dealiasedSelector = if(isDerived) sels.flatMap(sel => selectionsToDealias.map(m => (sel, m.symbol))).collect {
           case (sel, sym) if dealias(sym) == dealiasedSym => sel
         }.headOption else None
