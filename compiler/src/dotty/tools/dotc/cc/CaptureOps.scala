@@ -194,6 +194,7 @@ extension (tp: Type)
       true
     case tp: TermRef =>
       ((tp.prefix eq NoPrefix)
+      || tp.prefix.isTrackableRef
       || tp.symbol.is(ParamAccessor) && tp.prefix.isThisTypeOf(tp.symbol.owner)
       || tp.isRootCapability
       ) && !tp.symbol.isOneOf(UnstableValueFlags)

@@ -2930,7 +2930,6 @@ object Types extends TypeUtils {
 
     def implicitName(using Context): TermName = name
     def underlyingRef: TermRef = this
-
   }
 
   abstract case class TypeRef(override val prefix: Type,

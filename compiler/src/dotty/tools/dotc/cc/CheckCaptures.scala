@@ -122,10 +122,10 @@ object CheckCaptures:
    *  This check is performed at Typer.
    */
   def checkWellformed(parent: Tree, ann: Tree)(using Context): Unit =
-    parent.tpe match
-      case _: SingletonType =>
-        report.error(em"Singleton type $parent cannot have capture set", parent.srcPos)
-      case _ =>
+    // parent.tpe match
+    //   case _: SingletonType =>
+    //     report.error(em"Singleton type $parent cannot have capture set", parent.srcPos)
+    //   case _ =>
     def check(elem: Tree, pos: SrcPos): Unit = elem.tpe match
       case ref: CaptureRef =>
         if !ref.isTrackableRef then
@@ -488,21 +488,32 @@ class CheckCaptures extends Recheck, SymTransformer:
         case _ => denot
 
       val selType = recheckSelection(tree, qualType, name, disambiguate)
-      val selCs = selType.widen.captureSet
-      if selCs.isAlwaysEmpty
-          || selType.widen.isBoxedCapturing
+      val selWiden = selType.widen
+      def isStableSel = selType match
+        case selType: NamedType => selType.symbol.isStableMember
+        case _ => false
+
+      // println(i"recheck sel $tree, qualType = $qualType, selType = $selType")
+      // println(i"qual cs = ${qualType.captureSet}, sel cs = ${selType.captureSet}, sel widen cs = ${selType.widen.captureSet}")
+      // println(i"isStable = ${selType.isTrackableRef}, pt = $pt")
+
+      if pt == LhsProto
           || qualType.isBoxedCapturing
-          || pt == LhsProto
+          || selType.isTrackableRef
+          || selWiden.isBoxedCapturing
+          || selWiden.captureSet.isAlwaysEmpty
       then
         selType
       else
         val qualCs = qualType.captureSet
-        capt.println(i"pick one of $qualType, ${selType.widen}, $qualCs, $selCs in $tree")
+        val selCs = selType.captureSet
+        capt.println(i"pick one of $qualType, ${selType.widen}, $qualCs, $selCs ${selWiden.captureSet} in $tree")
+
         if qualCs.mightSubcapture(selCs)
             && !selCs.mightSubcapture(qualCs)
             && !pt.stripCapturing.isInstanceOf[SingletonType]
         then
-          selType.widen.stripCapturing.capturing(qualCs)
+          selWiden.stripCapturing.capturing(qualCs)
             .showing(i"alternate type for select $tree: $selType --> $result, $qualCs / $selCs", capt)
         else
           selType
