@@ -1309,7 +1309,10 @@ object Types extends TypeUtils {
     final def widen(using Context): Type = this match
       case _: TypeRef | _: MethodOrPoly => this // fast path for most frequent cases
       case tp: TermRef => // fast path for next most frequent case
-        if tp.isOverloaded then tp else tp.underlying.widen
+        // Don't call `isOverloaded` and `underlying` on `tp` directly,
+        // because `denot` will be computed twice if the type is provisional.
+        val denot = tp.denot
+        if denot.isOverloaded then tp else denot.info.widen
       case tp: SingletonType => tp.underlying.widen
       case tp: ExprType => tp.resultType.widen
       case tp =>
