@@ -2049,8 +2049,9 @@ trait Applications extends Compatibility {
     record("resolveOverloaded")
 
     // A local cache for widenings of alternatives.
-    // If a type is provisonal, its denotation will not cached.
-    // Hence, using `widen` on provisional types everywhere will recompute denotations repeatedly.
+    // The logic here heavily relies on `widen` to resolve overloadings. However, `widen`
+    // would compute the denotation, and the denotation of a provisional type is not cached,
+    // so we would end up computing the same denotation multiple times.
     // Given the denotation will not change in this part, we can safely cache the result.
     val altsWidenMap = mutable.HashMap.empty[TermRef, Type]
     def widen(ref: TermRef): Type = altsWidenMap.getOrElseUpdate(ref, ref.widen)
