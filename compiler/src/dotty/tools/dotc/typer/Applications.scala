@@ -2048,14 +2048,6 @@ trait Applications extends Compatibility {
   def resolveOverloaded(alts: List[TermRef], pt: Type)(using Context): List[TermRef] =
     record("resolveOverloaded")
 
-    // A local cache for widenings of alternatives.
-    // The logic here heavily relies on `widen` to resolve overloadings. However, `widen`
-    // would compute the denotation, and the denotation of a provisional type is not cached,
-    // so we would end up computing the same denotation multiple times.
-    // Given the denotation will not change in this part, we can safely cache the result.
-    val altsWidenMap = mutable.HashMap.empty[TermRef, Type]
-    def widen(ref: TermRef): Type = altsWidenMap.getOrElseUpdate(ref, ref.widen)
-
     /** Is `alt` a method or polytype whose result type after the first value parameter
      *  section conforms to the expected type `resultType`? If `resultType`
      *  is a `IgnoredProto`, pick the underlying type instead.
@@ -2103,15 +2095,15 @@ trait Applications extends Compatibility {
       pt match
         case pt: FunProto =>
           if pt.applyKind == ApplyKind.Using then
-            val alts0 = alts.filterConserve(alt => widen(alt).stripPoly.isImplicitMethod)
+            val alts0 = alts.filterConserve(_.widen.stripPoly.isImplicitMethod)
             if alts0 ne alts then return resolve(alts0)
-          else if alts.exists(alt => widen(alt).stripPoly.isContextualMethod) then
-            return resolveMapped(alts, alt => stripImplicit(widen(alt)), pt)
+          else if alts.exists(_.widen.stripPoly.isContextualMethod) then
+            return resolveMapped(alts, alt => stripImplicit(alt.widen), pt)
         case _ =>
 
-      var found = withoutMode(Mode.ImplicitsEnabled)(resolveOverloaded1(alts, pt, altsWidenMap))
+      var found = withoutMode(Mode.ImplicitsEnabled)(resolveOverloaded1(alts, pt))
       if found.isEmpty && ctx.mode.is(Mode.ImplicitsEnabled) then
-        found = resolveOverloaded1(alts, pt, altsWidenMap)
+        found = resolveOverloaded1(alts, pt)
       found match
         case alt :: Nil => adaptByResult(alt, alts) :: Nil
         case _ => found
@@ -2121,15 +2113,16 @@ trait Applications extends Compatibility {
      *   - the result is applied to value arguments and alternative is not a method, or
      *   - the result is applied to type arguments and alternative is not polymorphic
      */
-    def tryApply(alt: TermRef): Boolean = pt match
-      case pt: FunProto => !widen(alt).stripPoly.isInstanceOf[MethodType]
-      case pt: PolyProto => !widen(alt).isInstanceOf[PolyType]
+    val tryApply: Type => Boolean = alt => pt match {
+      case pt: FunProto => !alt.widen.stripPoly.isInstanceOf[MethodType]
+      case pt: PolyProto => !alt.widen.isInstanceOf[PolyType]
       case _ => false
+    }
 
     /** Replace each alternative by its apply members where necessary */
     def applyMembers(alt: TermRef): List[TermRef] =
       if (tryApply(alt)) {
-        val qual = widen(alt) match {
+        val qual = alt.widen match {
           case pt: PolyType =>
             wildApprox(pt.resultType)
           case _ =>
@@ -2157,11 +2150,9 @@ trait Applications extends Compatibility {
    *  It might be called twice from the public `resolveOverloaded` method, once with
    *  implicits and SAM conversions enabled, and once without.
    */
-  private def resolveOverloaded1(alts: List[TermRef], pt: Type, altsWidenMap: mutable.HashMap[TermRef, Type])(using Context): List[TermRef] =
+  private def resolveOverloaded1(alts: List[TermRef], pt: Type)(using Context): List[TermRef] =
     trace(i"resolve over $alts%, %, pt = $pt", typr, show = true) {
     record(s"resolveOverloaded1", alts.length)
-
-    def widen(ref: TermRef): Type = altsWidenMap.getOrElseUpdate(ref, ref.widen)
 
     def isDetermined(alts: List[TermRef]) = alts.isEmpty || alts.tail.isEmpty
 
@@ -2206,7 +2197,7 @@ trait Applications extends Compatibility {
         // If ref refers to a method whose parameter at index `idx` is a function type,
         // the arity of that function, otherise -1.
         def paramCount(ref: TermRef) =
-          val formals = widen(ref).firstParamTypes
+          val formals = ref.widen.firstParamTypes
           if formals.length > idx then
             formals(idx).dealias match
               case defn.FunctionNOf(args, _, _) => args.length
@@ -2231,7 +2222,7 @@ trait Applications extends Compatibility {
     val candidates = pt match {
       case pt @ FunProto(args, resultType) =>
         val numArgs = args.length
-        def sizeFits(alt: TermRef): Boolean = widen(alt).stripPoly match {
+        def sizeFits(alt: TermRef): Boolean = alt.widen.stripPoly match {
           case tp: MethodType =>
             val ptypes = tp.paramInfos
             val numParams = ptypes.length
@@ -2286,12 +2277,12 @@ trait Applications extends Compatibility {
         val alts1 = alts.filterConserve(pt.canInstantiate)
         if isDetermined(alts1) then alts1
         else
-          def withinBounds(alt: TermRef) = widen(alt) match
+          def withinBounds(alt: TermRef) = alt.widen match
             case tp: PolyType =>
               TypeOps.boundsViolations(targs1, tp.paramInfos, _.substParams(tp, _), NoType).isEmpty
           val alts2 = alts1.filter(withinBounds)
           if isDetermined(alts2) then alts2
-          else resolveMapped(alts1, alt => widen(alt).appliedTo(targs1.tpes), pt1)
+          else resolveMapped(alts1, _.widen.appliedTo(targs1.tpes), pt1)
 
       case pt =>
         val compat = alts.filterConserve(normalizedCompatible(_, pt, keepConstraint = false))
@@ -2336,9 +2327,9 @@ trait Applications extends Compatibility {
         case _ =>
           NoType
       }
-      skip(widen(alt))
+      skip(alt.widen)
 
-    def resultIsMethod(tp: TermRef): Boolean = widen(tp).stripPoly match
+    def resultIsMethod(tp: Type): Boolean = tp.widen.stripPoly match
       case tp: MethodType => stripInferrable(tp.resultType).isInstanceOf[MethodType]
       case _ => false
 
@@ -2368,7 +2359,7 @@ trait Applications extends Compatibility {
             if noCurriedCount == 1 then
               noCurried
             else if noCurriedCount > 1 && noCurriedCount < alts.length then
-              resolveOverloaded1(noCurried, pt, altsWidenMap)
+              resolveOverloaded1(noCurried, pt)
             else
               // prefer alternatves that match without default parameters
               val noDefaults = alts.filterConserve(!_.symbol.hasDefaultParams)
@@ -2376,10 +2367,10 @@ trait Applications extends Compatibility {
               if noDefaultsCount == 1 then
                 noDefaults
               else if noDefaultsCount > 1 && noDefaultsCount < alts.length then
-                resolveOverloaded1(noDefaults, pt, altsWidenMap)
+                resolveOverloaded1(noDefaults, pt)
               else if deepPt ne pt then
                 // try again with a deeper known expected type
-                resolveOverloaded1(alts, deepPt, altsWidenMap)
+                resolveOverloaded1(alts, deepPt)
               else
                 candidates
     }
