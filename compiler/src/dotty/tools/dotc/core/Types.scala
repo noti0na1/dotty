@@ -3687,22 +3687,24 @@ object Types extends TypeUtils {
     }
 
     private var myUnion: Type = uninitialized
+    private var myUnionProvStatus: ProvisionalState | Null = null
     private var myUnionPeriod: Period = Nowhere
 
     override def widenUnionWithoutNull(using Context): Type =
-      if myUnionPeriod != ctx.period then
+      if myUnionPeriod != ctx.period
+        || !isCacheUpToDate(currentProvisionalState, myUnionProvStatus) then
         val union = TypeComparer.lub(
           tp1.widenUnionWithoutNull, tp2.widenUnionWithoutNull, canConstrain = isSoft, isSoft = isSoft)
         myUnion = union match
           case union: OrType if isSoft => union.join
           case _ => union
-        if !isProvisional then myUnionPeriod = ctx.period
+        myUnionProvStatus = currentProvisionalState
+        myUnionPeriod = ctx.period
       myUnion
 
-    private var atomsRunId: RunId = NoRunId
-    private var widenedRunId: RunId = NoRunId
     private var myAtoms: Atoms = uninitialized
-    private var myWidened: Type = uninitialized
+    private var myAtomsProvStatus: ProvisionalState | Null = null
+    private var myAtomsRunId: RunId = NoRunId
 
     private def computeAtoms()(using Context): Atoms =
       val tp1n = tp1.normalized
@@ -3711,23 +3713,31 @@ object Types extends TypeUtils {
       else if tp2n.hasClassSymbol(defn.NothingClass) then tp1.atoms
       else tp1n.atoms | tp2n.atoms
 
+    override def atoms(using Context): Atoms =
+      if myAtomsRunId != ctx.runId
+        || !isCacheUpToDate(currentProvisionalState, myAtomsProvStatus) then
+        myAtoms = computeAtoms()
+        myAtomsProvStatus = currentProvisionalState
+        myAtomsRunId = ctx.runId
+      myAtoms
+
+    private var myWidened: Type = uninitialized
+    private var myWidenedProvStatus: ProvisionalState | Null = null
+    private var myWidenedRunId: RunId = NoRunId
+
     private def computeWidenSingletons()(using Context): Type =
       val tp1w = tp1.widenSingletons()
       val tp2w = tp2.widenSingletons()
       if ((tp1 eq tp1w) && (tp2 eq tp2w)) this else TypeComparer.lub(tp1w, tp2w, isSoft = isSoft)
 
-    override def atoms(using Context): Atoms =
-      if atomsRunId != ctx.runId then
-        myAtoms = computeAtoms()
-        if !isProvisional then atomsRunId = ctx.runId
-      myAtoms
-
     override def widenSingletons(skipSoftUnions: Boolean)(using Context): Type =
       if isSoft && skipSoftUnions then this
       else
-        if widenedRunId != ctx.runId then
+        if myWidenedRunId != ctx.runId
+          || !isCacheUpToDate(currentProvisionalState, myWidenedProvStatus) then
           myWidened = computeWidenSingletons()
-          if !isProvisional then widenedRunId = ctx.runId
+          myWidenedProvStatus = currentProvisionalState
+          myWidenedRunId = ctx.runId
         myWidened
 
     def derivedOrType(tp1: Type, tp2: Type, soft: Boolean = isSoft)(using Context): Type =
