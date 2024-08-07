@@ -3691,14 +3691,15 @@ object Types extends TypeUtils {
     private var myUnionPeriod: Period = Nowhere
 
     override def widenUnionWithoutNull(using Context): Type =
+      val currentState = currentProvisionalState
       if myUnionPeriod != ctx.period
-        || !isCacheUpToDate(currentProvisionalState, myUnionProvStatus) then
+        || !isCacheUpToDate(currentState, myUnionProvStatus) then
         val union = TypeComparer.lub(
           tp1.widenUnionWithoutNull, tp2.widenUnionWithoutNull, canConstrain = isSoft, isSoft = isSoft)
         myUnion = union match
           case union: OrType if isSoft => union.join
           case _ => union
-        myUnionProvStatus = currentProvisionalState
+        myUnionProvStatus = currentState
         myUnionPeriod = ctx.period
       myUnion
 
@@ -3714,10 +3715,11 @@ object Types extends TypeUtils {
       else tp1n.atoms | tp2n.atoms
 
     override def atoms(using Context): Atoms =
+      val currentState = currentProvisionalState
       if myAtomsRunId != ctx.runId
-        || !isCacheUpToDate(currentProvisionalState, myAtomsProvStatus) then
+        || !isCacheUpToDate(currentState, myAtomsProvStatus) then
         myAtoms = computeAtoms()
-        myAtomsProvStatus = currentProvisionalState
+        myAtomsProvStatus = currentState
         myAtomsRunId = ctx.runId
       myAtoms
 
@@ -3733,10 +3735,11 @@ object Types extends TypeUtils {
     override def widenSingletons(skipSoftUnions: Boolean)(using Context): Type =
       if isSoft && skipSoftUnions then this
       else
+        val currentState = currentProvisionalState
         if myWidenedRunId != ctx.runId
-          || !isCacheUpToDate(currentProvisionalState, myWidenedProvStatus) then
+          || !isCacheUpToDate(currentState, myWidenedProvStatus) then
           myWidened = computeWidenSingletons()
-          myWidenedProvStatus = currentProvisionalState
+          myWidenedProvStatus = currentState
           myWidenedRunId = ctx.runId
         myWidened
 
@@ -4002,26 +4005,27 @@ object Types extends TypeUtils {
           case tp: PolyType =>
             resultSignature.prependTypeParams(tp.paramNames.length)
 
+      val currentState = currentProvisionalState
       sourceLanguage match
         case SourceLanguage.Java =>
           if ctx.runId != myJavaSignatureRunId
-            || !isCacheUpToDate(currentProvisionalState, myJavaSignatureProvState) then
+            || !isCacheUpToDate(currentState, myJavaSignatureProvState) then
             myJavaSignature = computeSignature
-            myJavaSignatureProvState = currentProvisionalState
+            myJavaSignatureProvState = currentState
             if !myJavaSignature.isUnderDefined then myJavaSignatureRunId = ctx.runId
           myJavaSignature
         case SourceLanguage.Scala2 =>
           if ctx.runId != myScala2SignatureRunId
-            || !isCacheUpToDate(currentProvisionalState, myScala2SignatureProvState) then
+            || !isCacheUpToDate(currentState, myScala2SignatureProvState) then
             myScala2Signature = computeSignature
-            myScala2SignatureProvState = currentProvisionalState
+            myScala2SignatureProvState = currentState
             if !myScala2Signature.isUnderDefined then myScala2SignatureRunId = ctx.runId
           myScala2Signature
         case SourceLanguage.Scala3 =>
           if ctx.runId != mySignatureRunId
-            || !isCacheUpToDate(currentProvisionalState, mySignatureProvState) then
+            || !isCacheUpToDate(currentState, mySignatureProvState) then
             mySignature = computeSignature
-            mySignatureProvState = currentProvisionalState
+            mySignatureProvState = currentState
             if !mySignature.isUnderDefined then mySignatureRunId = ctx.runId
           mySignature
     end signature
