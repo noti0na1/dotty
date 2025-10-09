@@ -3716,7 +3716,15 @@ class MatchReducer(initctx: Context) extends TypeComparer(initctx) {
                 false
 
           case MatchTypeCasePattern.AbstractTypeConstructor(tycon, argPatterns) =>
-            scrut.dealias match
+            // Widen singleton types that are safe to widen (not parameters)
+            // to allow matching against abstract type constructors.
+            // See issue #20453
+            def widenSafely(tp: Type): Type = tp match
+              case tp: TermRef if !tp.symbol.is(Param) => tp.underlying.widenSingleton
+              case _ => tp
+
+            val scrutToMatch = widenSafely(scrut.dealias)
+            scrutToMatch match
               case scrutDealias @ AppliedType(scrutTycon, args) if scrutTycon =:= tycon =>
                 matchArgs(argPatterns, args, tycon.typeParams, scrutIsWidenedAbstract)
               case _ =>
