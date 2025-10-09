@@ -321,11 +321,11 @@ class Synthesizer(typer: Typer)(using @constructorOnly c: Context):
       em"$name mismatch, expected: $expected, found: $actual.", ctx.source.atSpan(span))
 
   extension (formal: Type)
-    /** `tp := op; tp <:< formal; formal & tp` */
+    /** `tp := op; tp <:< formal; tp & formal` */
     private def constrained_&(op: Context ?=> Type)(using Context): Type =
       val tp = op
       tp <:< formal
-      formal & tp
+      tp & formal
 
   private def mkMirroredMonoType(mirroredType: HKTypeLambda)(using Context): Type =
     val monoMap = new TypeMap:
