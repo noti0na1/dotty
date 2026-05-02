@@ -1019,4 +1019,96 @@ class DynamicEvalCaptureCheckingTests extends ReplTest(
           out.contains("failed to compile")
       )
     }
+
+  // ===========================================================================
+  // Capture-faithful eval via the verification compile pass
+  //
+  // The runtime splices the (now known) eval body string back into a
+  // copy of the enclosing top-level statement and re-typechecks the
+  // result under the original lexical context. That catches CC
+  // violations the wrapper-compile path can't see, because the wrapper
+  // erases capture sets on binding-parameter types (an `IO^` parameter
+  // arrives as plain `IO`), so a pure-function position rejecting the
+  // capability never gets a chance to fire there.
+  // ===========================================================================
+
+  @Test def captureViolationOnIoParamInsidePureLambdaRejected =
+    initially {
+      run(
+        """|import caps.*
+           |trait C[T]:
+           |  def map[U](op: T -> U): C[U] = ???
+           |class IO extends SharedCapability
+           |class CImpl extends C[Int]
+           |def f(i: Int, io: IO^, c: C[Int]) =
+           |  eval[Any]("c.map(x => io.toString)")
+           |f(1, new IO, new CImpl)""".stripMargin
+      )
+      val out = storedOutput()
+      // The body `x => io.toString` captures the `io: IO^` parameter
+      // inside an `op: T -> U` (pure) position. The wrapper compile
+      // erases the `^` on the binding type and so doesn't see it; the
+      // verification pass re-checks the original `def f(i: Int, io: IO^, ...)`
+      // with the body inlined and rejects.
+      assertTrue(
+        s"expected a capture-checking failure, got:\n$out",
+        out.contains("failed to compile") &&
+          (out.contains("captures") || out.contains("capability") || out.contains("flow"))
+      )
+    }
+
+  @Test def pureBodyOnIoParamAccepted =
+    initially {
+      run(
+        """|import caps.*
+           |trait C[T]:
+           |  def map[U](op: T -> U): C[U] = ???
+           |class IO extends SharedCapability
+           |class CImpl extends C[Int]:
+           |  override def map[U](op: Int -> U): C[U] = new CImpl().asInstanceOf[C[U]]
+           |def g(i: Int, io: IO^, c: C[Int]) =
+           |  eval[Any]("c.map(x => i)")
+           |g(1, new IO, new CImpl)
+           |println("g succeeded")""".stripMargin
+      )
+      val out = storedOutput()
+      // `x => i` only captures the pure `Int` parameter `i`. The
+      // verification compile and the wrapper compile both accept it.
+      assertContains("g succeeded", out)
+      assertTrue(
+        s"expected no eval failure, got:\n$out",
+        !out.contains("failed to compile")
+      )
+    }
+
+  @Test def captureViolationInNestedEvalOnly =
+    initially {
+      // The outer eval body is a plain `eval[Any]("...")` call — no
+      // CC concerns *at that level*. The CC violation lives inside
+      // the inner eval body: `c.map(x => io.toString)` captures `io`
+      // into a `T -> U` (pure) lambda position. This exercises the
+      // nested-context chaining: the outer eval's `enclosingSource`
+      // is `def f(...) = <Marker>`, and when the rewriter walks the
+      // outer body it composes
+      //   def f(...) = ({ <outerBodyWithInnerMarker> })
+      // as the inner eval's `enclosingSource`. The inner verification
+      // pass splices the inner body in and CC sees the full original
+      // context (def + outer body + inner body) at once.
+      run(
+        """|import caps.*
+           |trait C[T]:
+           |  def map[U](op: T -> U): C[U] = ???
+           |class IO extends SharedCapability
+           |class CImpl extends C[Int]
+           |def f(i: Int, io: IO^, c: C[Int]): Any =
+           |  eval[Any]("eval[Any](\"c.map(x => io.toString)\")")
+           |f(1, new IO, new CImpl)""".stripMargin
+      )
+      val out = storedOutput()
+      assertTrue(
+        s"expected a nested capture-checking failure, got:\n$out",
+        out.contains("failed to compile") &&
+          (out.contains("captures") || out.contains("capability") || out.contains("flow"))
+      )
+    }
 end DynamicEvalCaptureCheckingTests

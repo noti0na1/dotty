@@ -121,9 +121,19 @@ object Eval:
    *  means the caller didn't pin a type, in which case the runtime
    *  uses `Any` as the wrapper's return type and relies on the call
    *  site's `asInstanceOf[T]` cast.
+   *
+   *  `enclosingSource` is the source text of the enclosing top-level
+   *  statement at the eval call site, with this eval call's span
+   *  replaced by `EvalBodyPlaceholder.Marker`. The runtime splices the
+   *  (now known) eval body string back into that placeholder and runs
+   *  a separate verification compile of the original lexical context
+   *  with capture checking enabled, so violations the wrapper-compile
+   *  path can't see (e.g. a body capturing an `IO^` parameter inside
+   *  a `T -> U` lambda) are caught. Empty when the rewriter couldn't
+   *  compute a slice; the runtime then skips verification.
    */
   trait Adapter:
-    def evalCode(code: String, bindings: Array[Binding], expectedType: String): Any
+    def evalCode(code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): Any
 
   private val active = new ThreadLocal[Adapter]
 
@@ -135,14 +145,14 @@ object Eval:
 
   /** Compile and run `code` against the current REPL session. */
   def eval[T](code: String): T =
-    evalImpl[T](code, Array.empty[Binding], "")
+    evalImpl[T](code, Array.empty[Binding], "", "")
 
   /** Like `eval(code)` but with explicit bindings. The REPL parser-stage
    *  rewriter dispatches to this overload when there are lambda-local
    *  names to capture.
    */
   def eval[T](code: String, bindings: Array[Binding]): T =
-    evalImpl[T](code, bindings, "")
+    evalImpl[T](code, bindings, "", "")
 
   /** Like `eval(code, bindings)` but also pins the body's expected
    *  return type so the eval driver type-checks the body against `T`
@@ -153,15 +163,25 @@ object Eval:
    *  to `Any` and the cast at the call site is the only check.
    */
   def eval[T](code: String, bindings: Array[Binding], expectedType: String): T =
-    evalImpl[T](code, bindings, expectedType)
+    evalImpl[T](code, bindings, expectedType, "")
 
-  private def evalImpl[T](code: String, bindings: Array[Binding], expectedType: String): T =
+  /** Like the 3-arg form but also receives the source of the enclosing
+   *  top-level statement at the call site (with a placeholder for this
+   *  eval call's location). The runtime splices the body in and runs a
+   *  capture-checking verification compile against the original lexical
+   *  context, catching violations the wrapper compile can't see. The
+   *  parser-stage rewriter dispatches to this overload.
+   */
+  def eval[T](code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): T =
+    evalImpl[T](code, bindings, expectedType, enclosingSource)
+
+  private def evalImpl[T](code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): T =
     val a = active.get
     if a == null then
       throw new IllegalStateException(
         "eval(...) requires an active dotty REPL session"
       )
-    a.evalCode(code, bindings, expectedType).asInstanceOf[T]
+    a.evalCode(code, bindings, expectedType, enclosingSource).asInstanceOf[T]
 
   /** Compile `code` against `classLoader`'s classpath using a fresh,
    *  standalone Driver, with each `Binding` exposed as a method parameter
@@ -181,10 +201,33 @@ object Eval:
       replOutDir: AbstractFile,
       replWrapperImports: Array[String],
       compilerSettings: Array[String],
-      expectedType: String
+      expectedType: String,
+      enclosingSource: String = ""
   ): Any =
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
+
+    // Capture-checking verification pass. Splice the (now known) eval
+    // body string into the placeholder the parser-stage rewriter left
+    // in `enclosingSource` and compile the resulting source under the
+    // original lexical context. CC sees the body's lambdas and captures
+    // exactly as if the user had inlined the body by hand, which catches
+    // violations the binding-based wrapper compile can't see (a body
+    // capturing an `IO^` parameter inside a `T -> U` lambda, for
+    // example: the wrapper's `__run__` parameter is just `IO`, with the
+    // capture set erased, so CC never gets a chance to flag the inner
+    // lambda). Skip when:
+    //   - enclosingSource is empty (rewriter couldn't form a slice, or
+    //     this is a runtime-rewritten nested eval), or
+    //   - capture checking isn't enabled for the session, since the
+    //     verification compile re-checks the *whole* enclosing
+    //     statement and can surface unrelated errors (e.g. when the
+    //     surrounding code uses session-level imports the verify
+    //     compile doesn't replay).
+    // Compile errors from this pass surface as `EvalCompileException`
+    // exactly like wrapper-compile errors.
+    if enclosingSource.nonEmpty && captureCheckingEnabled(compilerSettings) then
+      verifyEnclosing(code, enclosingSource, classLoader, replOutDir, replWrapperImports, compilerSettings)
 
     // Pre-compute the source-level type name for each binding once.
     // Prefer the typer-supplied `sourceType` (filled in by the
@@ -250,7 +293,15 @@ object Eval:
     // val/var the body itself declares. This makes a body like
     // `val j = 2; eval("i + j")` work out of the box: the inner eval
     // receives `j` as a binding the same way an outer eval would.
-    val rewrittenCode = rewriteUserCode(code, bindings)
+    //
+    // We also pass the outer's `enclosingSource` so the rewriter can
+    // *compose* an enclosingSource for each inner eval call: outer's
+    // enclosingSource with its placeholder filled by the outer body
+    // (which itself carries an inner placeholder for the inner eval).
+    // This way the inner verification compile reconstructs the full
+    // original lexical context — def, outer body, inner body — and
+    // capture-checks them as one source.
+    val rewrittenCode = rewriteUserCode(code, bindings, enclosingSource)
 
     // Pin the wrapper's return type to the caller's `T` when we have it.
     // The body then type-checks against `T` and a mismatch surfaces as a
@@ -311,6 +362,57 @@ object Eval:
       val cause = e.getCause
       if cause != null then throw cause else throw e
   end evalIsolated
+
+  /** Whether the live REPL session has capture checking enabled (via a
+   *  `-language:experimental.captureChecking` CLI flag). The
+   *  verification pass only runs for CC-enabled sessions, since CC is
+   *  what the pass is for and a naive re-compile of the enclosing
+   *  statement otherwise risks surfacing unrelated errors (missing
+   *  imports, type-mismatch tests that intentionally rely on the
+   *  call-site cast, etc.).
+   */
+  private def captureCheckingEnabled(compilerSettings: Array[String]): Boolean =
+    compilerSettings.exists(s => s.contains("captureChecking"))
+
+  /** Splice `code` into the placeholder embedded in `enclosingSource`
+   *  (the source of the enclosing top-level statement at the eval call
+   *  site) and run a verification compile under the original lexical
+   *  context. Throws `EvalCompileException` on compile errors so the
+   *  user sees a CC violation as a structured failure, not a silent
+   *  wrapper-compile success.
+   *
+   *  We wrap the spliced source in a synthetic object so the result is
+   *  a valid compilation unit. Imports of REPL-session symbols are
+   *  prepended so the spliced code resolves session-level names the
+   *  same way the wrapper compile does. Capture checking is enabled if
+   *  the live REPL was started with the flag (forwarded through
+   *  `compilerSettings`).
+   */
+  private def verifyEnclosing(
+      code: String,
+      enclosingSource: String,
+      classLoader: ClassLoader,
+      replOutDir: AbstractFile,
+      replWrapperImports: Array[String],
+      compilerSettings: Array[String]
+  ): Unit =
+    val splicedBody = enclosingSource.replace(EvalBodyPlaceholder.Marker, EvalBodyPlaceholder.emit(code))
+    val verifyName = s"__EvalVerify_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
+    val evalImport = "import dotty.tools.repl.Eval.eval\n"
+    val importBlock =
+      if replWrapperImports.length == 0 then evalImport
+      else evalImport + replWrapperImports.mkString("", "\n", "\n")
+    val source =
+      s"""${importBlock}object $verifyName {
+         |$splicedBody
+         |}
+         |""".stripMargin
+    val outDir = new VirtualDirectory("<eval-verify>")
+    compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
+      case Left(errs) =>
+        throw new EvalCompileException(errs.toArray, source)
+      case Right(()) =>
+  end verifyEnclosing
 
   /** Best-effort conversion from a runtime `Class` to a Scala source-level
    *  type name. Generic type info is erased on the JVM, so parameterized
@@ -408,7 +510,11 @@ object Eval:
    *  fall back to the original code if the rewritten form fails to
    *  re-parse.
    */
-  private def rewriteUserCode(code: String, bindings: Array[Binding]): String =
+  private def rewriteUserCode(
+      code: String,
+      bindings: Array[Binding],
+      outerEnclosingSource: String
+  ): String =
     if !mightContainNestedEval(code) then return code
     val ctxBase = new ContextBase
     val ctx0 = ctxBase.initialCtx
@@ -418,7 +524,7 @@ object Eval:
     val initialScope: Array[(String, Boolean)] =
       bindings.map(b => (b.name, b.isVar))
     try
-      val rewritten = EvalRewriter.rewriteCode(code, initialScope)(using ctx)
+      val rewritten = EvalRewriter.rewriteCode(code, initialScope, outerEnclosingSource)(using ctx)
       if isParseable(rewritten)(using ctx) then rewritten else code
     catch case NonFatal(_) =>
       code

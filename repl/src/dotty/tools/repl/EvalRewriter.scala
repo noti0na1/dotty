@@ -10,6 +10,18 @@ import dotc.core.Decorators.*
 import dotc.core.Flags
 import dotc.util.Spans.Span
 
+/** Sentinel string the parser-stage rewriter substitutes into the
+ *  enclosing-source text where each `eval(...)` call sits. The runtime
+ *  verification pass swaps it back out for the (now known) eval body
+ *  string before re-typechecking the original lexical context.
+ *
+ *  Wrapped in parentheses so it splices into any expression position
+ *  the eval call could appear in.
+ */
+private[repl] object EvalBodyPlaceholder:
+  val Marker: String = "__evalBodyPlaceholder_d3edfb9d__"
+  def emit(body: String): String = s"({ $body })"
+
 /** Parse-stage rewriter that augments each `eval(...)` call with
  *  `Eval.bind("name", name)` (or `Eval.bindVar("name", cell)` for
  *  mutable bindings) for every name introduced by an enclosing lambda,
@@ -26,7 +38,10 @@ object EvalRewriter:
   /** Rewrite all `eval(...)` calls in `trees`. */
   def rewrite(trees: List[untpd.Tree])(using Context): List[untpd.Tree] =
     val tx = new Transformer
-    trees.mapConserve(tx.transform(_))
+    trees.mapConserve { tree =>
+      tx.setTopLevel(tree)
+      tx.transform(tree)
+    }
 
   /** Rewrite a code string by parsing it, applying the rewriter (with
    *  `initialScope` seeded so nested eval calls inside the body capture
@@ -34,8 +49,22 @@ object EvalRewriter:
    *  pretty-printing the result. Used by `Eval.evalIsolated` so a body
    *  like `val j = 2; eval("i + j")` has its inner eval rewritten to
    *  receive `j` as a binding.
+   *
+   *  When `outerEnclosingSource` is non-empty (i.e. we're rewriting an
+   *  *outer* eval's body and that outer eval came in with its own
+   *  enclosing context), each inner eval call's enclosingSource is
+   *  composed: outer's enclosingSource with outer's placeholder slot
+   *  filled by the outer body, and the outer body in turn carries an
+   *  inner placeholder for the inner eval. This way the inner eval's
+   *  verification compile reconstructs the entire original lexical
+   *  context (the def, the outer body, and the inner body) and
+   *  capture-checks them together.
    */
-  def rewriteCode(code: String, initialScope: Array[(String, Boolean)])(using Context): String =
+  def rewriteCode(
+      code: String,
+      initialScope: Array[(String, Boolean)],
+      outerEnclosingSource: String = ""
+  )(using Context): String =
     import dotty.tools.dotc.parsing.Parsers.Parser
     import dotty.tools.dotc.util.SourceFile
     val source = SourceFile.virtual("<eval-body>", code)
@@ -44,6 +73,8 @@ object EvalRewriter:
     val tx = new Transformer
     val seed = initialScope.iterator.map((n, isVar) => CapturedName(n, isVar)).toList
     tx.pushInitialScope(seed)
+    if outerEnclosingSource.nonEmpty then
+      tx.setNestedContext(code, outerEnclosingSource)
     tx.transform(tree).show
 
   /** A captured local.
@@ -83,6 +114,15 @@ object EvalRewriter:
     val EvalResult: String = "__eval_result__"
     def cell(name: String): String = s"${name}__cell"
 
+  /** What kind of top-level shape encloses the eval call. The
+   *  verification compile wraps `Expression` shapes in a synthetic
+   *  `val __unused__: Any = { ... }` so the result type-checks; for
+   *  `Definition` shapes (def/val/object/class/import) the source is
+   *  already a valid module member and gets dropped in as-is.
+   */
+  private enum TopKind:
+    case Unknown, Definition, Expression
+
   private class Transformer extends untpd.UntypedTreeMap:
     import untpd.*
 
@@ -90,6 +130,59 @@ object EvalRewriter:
      *  records the names a single lambda, block, or method introduces.
      */
     private val scopeStack = mutable.Stack.empty[List[CapturedName]]
+
+    /** The currently-active top-level tree (one entry of the REPL line's
+     *  parsed `trees` list). Used to compute, for each eval call we
+     *  encounter, the source text of the enclosing top-level statement
+     *  with the eval call's span replaced by `EvalBodyPlaceholder.Marker`.
+     *  The runtime verification pass splices the (now known) eval body
+     *  string back into that placeholder and re-typechecks the original
+     *  lexical context, which is what catches capture-checking violations
+     *  the binding-based wrapper compile can't see.
+     */
+    private var topLevelStart: Int = -1
+    private var topLevelEnd: Int = -1
+    private var topLevelSource: dotc.util.SourceFile | Null = null
+    private var topLevelKind: TopKind = TopKind.Unknown
+
+    /** Nested-eval composition state. When this transformer is rewriting
+     *  the body of an *outer* eval (via `rewriteCode`) and that outer
+     *  eval came in with its own enclosingSource, we keep both pieces
+     *  here so that for each inner eval call we can compose:
+     *
+     *    outerEnclosingSource[Marker := ({ outerBody[innerSpan := Marker] })]
+     *
+     *  giving the inner eval an enclosingSource that splices through to
+     *  the *original* top-level statement. The inner verification
+     *  compile then sees the def/val that owns the outer eval, the
+     *  outer eval's body, and the inner eval's body all in one source
+     *  unit — which is what CC needs to reason about the inner body's
+     *  captures.
+     */
+    private var nestedOuterBody: String = ""
+    private var nestedOuterEnclosingSource: String = ""
+
+    def setTopLevel(tree: Tree)(using Context): Unit =
+      val span = tree.span
+      if span.exists then
+        topLevelStart = span.start
+        topLevelEnd = span.end
+        topLevelSource = tree.source
+        topLevelKind = classifyTopLevel(tree)
+      else
+        topLevelStart = -1
+        topLevelEnd = -1
+        topLevelSource = null
+        topLevelKind = TopKind.Unknown
+
+    def setNestedContext(outerBody: String, outerEnclosingSource: String): Unit =
+      nestedOuterBody = outerBody
+      nestedOuterEnclosingSource = outerEnclosingSource
+
+    private def classifyTopLevel(tree: Tree): TopKind = tree match
+      case _: DefDef | _: ValDef | _: TypeDef | _: ModuleDef | _: Import => TopKind.Definition
+      case _: PackageDef => TopKind.Definition
+      case _ => TopKind.Expression
 
     /** Counter for synthesising names for anonymous given captures.
      *  These names are only used as the wrapper's parameter name; user
@@ -194,24 +287,40 @@ object EvalRewriter:
         val newRhs = withScope(paramNames)(transform(dd.rhs))
         cpy.DefDef(dd)(dd.name, dd.paramss, dd.tpt, newRhs)
 
-      // The eval call itself: rewrite to the 3-arg form
-      //   eval[T](code, scala.Array(bindings), "")
-      // The empty string is a sentinel for the expected return type;
-      // `EvalTypeAnnotate` fills it in with the source-level rendering
-      // of the typer's view of `T` so the eval body type-checks against
-      // `T` rather than `Any`. We always emit the 3-arg form (even when
-      // there are no captures and an empty bindings array) so the
-      // post-typer phase has a uniform shape to recognise.
+      // The eval call itself: rewrite to the 4-arg form
+      //   eval[T](code, scala.Array(bindings), "", enclosingSource)
+      //
+      // The third arg's empty string is a sentinel for the expected
+      // return type; `EvalTypeAnnotate` fills it in with the source-level
+      // rendering of the typer's view of `T` so the eval body type-checks
+      // against `T` rather than `Any`.
+      //
+      // The fourth arg is the source text of the enclosing top-level
+      // statement (the REPL line's def/val/expr/etc.) with this eval
+      // call's span replaced by `EvalBodyPlaceholder.Marker`. The runtime
+      // verification pass splices the (now known) eval body back into
+      // that placeholder and re-typechecks the whole thing under the
+      // original lexical context. That's what catches capture-checking
+      // violations the binding-based wrapper compile can't see (e.g.
+      // a body capturing an `IO^` parameter inside a `T -> U` lambda).
+      // Empty when we can't compute it; in that case the runtime skips
+      // the verification pass.
+      //
+      // We always emit the 4-arg form (even when there are no captures
+      // and an empty bindings array) so the post-typer phase has a
+      // uniform shape to recognise.
       case app @ Apply(fn, args) if isEvalCall(fn) =>
         val captured = currentBindings
         val newArgs = args.mapConserve(transform)
+        val enclosingSrc = computeEnclosingSource(app.span)
         if captured.exists(_.isVar) then
-          buildVarAwareCall(app, fn, newArgs, captured)
+          buildVarAwareCall(app, fn, newArgs, captured, enclosingSrc)
         else
           val bindArgs = captured.map(c => buildBind(c, app.span))
           val arrayArg = buildArray(bindArgs, app.span)
           val tpeLit = Literal(Constant("")).withSpan(app.span)
-          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit)
+          val srcLit = Literal(Constant(enclosingSrc)).withSpan(app.span)
+          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit)
 
       case _ => super.transform(tree)
     end transform
@@ -226,7 +335,8 @@ object EvalRewriter:
         app: Apply,
         fn: Tree,
         newArgs: List[Tree],
-        captured: List[CapturedName]
+        captured: List[CapturedName],
+        enclosingSrc: String
     )(using Context): Tree =
       val span = app.span
 
@@ -241,15 +351,17 @@ object EvalRewriter:
         ).withSpan(span)
       }
 
-      // 2. the eval call (passing bind / bindVar args). 3-arg form
+      // 2. the eval call (passing bind / bindVar args). 4-arg form
       // includes the empty `expectedType` sentinel that
-      // `EvalTypeAnnotate` fills in with the typer-known `T`.
+      // `EvalTypeAnnotate` fills in with the typer-known `T`, and the
+      // enclosing-source string for the runtime verification pass.
       val bindArgs: List[Tree] = captured.map { c =>
         if c.isVar then buildBindVar(c.name, span) else buildBind(c, span)
       }
       val arrayArg = buildArray(bindArgs, span)
       val tpeLit = Literal(Constant("")).withSpan(span)
-      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit)
+      val srcLit = Literal(Constant(enclosingSrc)).withSpan(span)
+      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit)
       val resultDef = ValDef(
         Names.EvalResult.toTermName,
         TypeTree(),
@@ -348,6 +460,55 @@ object EvalRewriter:
       td.rhs match
         case _: TypeBoundsTree => true
         case _ => false
+
+    /** The source text of the enclosing top-level statement, with the
+     *  span of the eval call we're rewriting replaced by
+     *  `EvalBodyPlaceholder.Marker`. The runtime verification pass
+     *  splices the eval body back into that placeholder and re-typechecks
+     *  the original lexical context to catch capture-checking violations
+     *  the wrapper-compile path can't see.
+     *
+     *  Returns the empty string when we can't form a valid slice (e.g.
+     *  the eval call's span fell outside the top-level tree's span,
+     *  which can happen for synthetic spans). The runtime treats the
+     *  empty string as "skip the verification pass".
+     */
+    private def computeEnclosingSource(evalSpan: Span)(using Context): String =
+      // Nested mode: we're rewriting an outer eval's body (via
+      // `rewriteCode`), and the outer eval supplied us its own
+      // enclosingSource. Compose so the inner eval inherits the full
+      // chain. The body's tree spans are coordinates within
+      // `nestedOuterBody`, so we slice that, drop a Marker where the
+      // inner eval sits, then plug the result into the outer
+      // enclosingSource's Marker slot (wrapped in `({ ... })` so it
+      // splices into any expression position the outer eval was in).
+      if nestedOuterEnclosingSource.nonEmpty && nestedOuterBody.nonEmpty then
+        if !evalSpan.exists then return ""
+        val s = evalSpan.start
+        val e = evalSpan.end
+        if s < 0 || e > nestedOuterBody.length || s > e then return ""
+        val outerBodyWithInnerMarker =
+          nestedOuterBody.substring(0, s) + EvalBodyPlaceholder.Marker + nestedOuterBody.substring(e)
+        return nestedOuterEnclosingSource.replace(
+          EvalBodyPlaceholder.Marker,
+          EvalBodyPlaceholder.emit(outerBodyWithInnerMarker)
+        )
+
+      val sourceFile = topLevelSource
+      if topLevelStart < 0 || !evalSpan.exists || sourceFile == null then return ""
+      val src = sourceFile.content
+      if topLevelEnd > src.length || topLevelStart >= topLevelEnd then return ""
+      val relStart = evalSpan.start - topLevelStart
+      val relEnd = evalSpan.end - topLevelStart
+      val topLen = topLevelEnd - topLevelStart
+      if relStart < 0 || relEnd > topLen || relStart > relEnd then return ""
+      val topSrc = String.valueOf(src, topLevelStart, topLen)
+      val withMarker =
+        topSrc.substring(0, relStart) + EvalBodyPlaceholder.Marker + topSrc.substring(relEnd)
+      topLevelKind match
+        case TopKind.Definition => withMarker
+        case TopKind.Expression => s"val __unused__ : Any = { $withMarker }"
+        case TopKind.Unknown => ""
 
     private def isEvalCall(fn: Tree): Boolean = fn match
       case Ident(n) => n.toString == "eval"

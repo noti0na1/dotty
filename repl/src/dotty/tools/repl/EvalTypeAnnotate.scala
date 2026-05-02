@@ -2,11 +2,13 @@ package dotty.tools
 package repl
 
 import dotc.ast.tpd
+import dotc.cc.CaptureAnnotation
+import dotc.core.Annotations.Annotation
 import dotc.core.Constants.Constant
 import dotc.core.Contexts.*
 import dotc.core.Phases.Phase
 import dotc.core.Symbols.{NoSymbol, Symbol, defn, requiredModule}
-import dotc.core.Types.Type
+import dotc.core.Types.{AnnotatedType, Type, TypeMap}
 
 /** Post-typer phase that fills in the source-level type of every
  *  `Eval.bind` / `Eval.bindVar` call the parser-stage rewriter produced.
@@ -72,18 +74,21 @@ class EvalTypeAnnotate extends Phase:
             val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
             cpy.Apply(app)(fun, name :: value :: tpeLit :: Nil)
 
-        case app @ Apply(fun, code :: bindings :: (sentinel @ Literal(Constant(""))) :: Nil)
+        case app @ Apply(fun, code :: bindings :: (sentinel @ Literal(Constant(""))) :: rest)
             if isEvalCall(fun) =>
           // Render the `T` from the surrounding `eval[T](...)` typed
           // TypeApply so the eval body's wrapper compiles with `T` as
           // its return type. Falls back to the empty sentinel (and the
           // call-site cast) when `T` mentions a locally-scoped symbol.
+          // The 4-arg form additionally carries the enclosing-source
+          // string for the verification pass; we preserve `rest` (the
+          // tail past the expectedType sentinel) untouched.
           val tArg = extractTypeArg(fun)
           val tpeStr = if tArg eq null then "" else EvalTypeAnnotate.renderType(tArg)
           if tpeStr.isEmpty then app
           else
             val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
-            cpy.Apply(app)(fun, code :: bindings :: tpeLit :: Nil)
+            cpy.Apply(app)(fun, code :: bindings :: tpeLit :: rest)
 
         case _ => tree
 
@@ -155,6 +160,16 @@ object EvalTypeAnnotate:
    *  aliases the user has in scope (and that the imports the eval
    *  driver injects also bring into scope) are usually preferable to
    *  their expansions, especially for REPL-defined opaque types.
+   *
+   *  All capture annotations (`^`, `^{...}`) are stripped: the wrapper
+   *  module's `__run__` parameters are not the original capabilities,
+   *  they're plain values reflectively passed across the eval
+   *  classloader boundary, and the cap references inside any
+   *  CapturingType wouldn't resolve in the wrapper anyway. The
+   *  capture-checking verification pass (which compiles the spliced
+   *  body under the *original* lexical context) is what catches CC
+   *  violations now; the wrapper compile sees binding types as
+   *  untracked.
    */
   private[repl] def renderType(tpe: Type)(using Context): String =
     if tpe == null || !tpe.exists || tpe.isError then return ""
@@ -162,11 +177,33 @@ object EvalTypeAnnotate:
     if !widened.exists || widened.isError then return ""
     if isUselessType(widened) then return ""
     if mentionsLocallyScopedSymbol(widened) then return ""
+    val cleaned = stripCaptureAnnotations(widened)
     // Disable colours so the rendered string never contains ANSI
     // escapes that would later confuse the eval driver's parser.
     val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
-    try widened.show(using printCtx)
+    try cleaned.show(using printCtx)
     catch case _: Throwable => ""
+
+  /** Recursively drop `CapturingType` wrappers and `@retains[...]`
+   *  annotations from `tpe`. Keeps every other layer (applied types,
+   *  refinements, type aliases, etc.) intact so the wrapper signature
+   *  matches the caller's intent shape-wise.
+   */
+  private def stripCaptureAnnotations(tpe: Type)(using Context): Type =
+    val mapper = new TypeMap:
+      def apply(tp: Type): Type = tp match
+        case AnnotatedType(parent, ann) if isCaptureAnnotation(ann) =>
+          this(parent)
+        case _ =>
+          mapOver(tp)
+    mapper(tpe)
+
+  private def isCaptureAnnotation(ann: Annotation)(using Context): Boolean =
+    ann match
+      case _: CaptureAnnotation => true
+      case _ =>
+        val sym = ann.symbol
+        sym.exists && (sym == defn.RetainsAnnot || sym == defn.RetainsCapAnnot)
 
   /** A type that's not worth pinning into the wrapper signature.
    *
