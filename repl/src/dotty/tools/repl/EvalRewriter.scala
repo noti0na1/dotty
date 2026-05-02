@@ -194,20 +194,24 @@ object EvalRewriter:
         val newRhs = withScope(paramNames)(transform(dd.rhs))
         cpy.DefDef(dd)(dd.name, dd.paramss, dd.tpt, newRhs)
 
-      // The eval call itself: splice in an
-      // `Array(Eval.bind/bindVar(...), ...)` argument for every captured
-      // local. When any captures are vars, also wrap the call in a Block
-      // that creates `VarCell`s per var and syncs them back after eval.
+      // The eval call itself: rewrite to the 3-arg form
+      //   eval[T](code, scala.Array(bindings), "")
+      // The empty string is a sentinel for the expected return type;
+      // `EvalTypeAnnotate` fills it in with the source-level rendering
+      // of the typer's view of `T` so the eval body type-checks against
+      // `T` rather than `Any`. We always emit the 3-arg form (even when
+      // there are no captures and an empty bindings array) so the
+      // post-typer phase has a uniform shape to recognise.
       case app @ Apply(fn, args) if isEvalCall(fn) =>
         val captured = currentBindings
-        if captured.isEmpty then super.transform(tree)
+        val newArgs = args.mapConserve(transform)
+        if captured.exists(_.isVar) then
+          buildVarAwareCall(app, fn, newArgs, captured)
         else
-          val newArgs = args.mapConserve(transform)
-          if !captured.exists(_.isVar) then
-            val bindArgs = captured.map(c => buildBind(c, app.span))
-            cpy.Apply(app)(fn, newArgs :+ buildArray(bindArgs, app.span))
-          else
-            buildVarAwareCall(app, fn, newArgs, captured)
+          val bindArgs = captured.map(c => buildBind(c, app.span))
+          val arrayArg = buildArray(bindArgs, app.span)
+          val tpeLit = Literal(Constant("")).withSpan(app.span)
+          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit)
 
       case _ => super.transform(tree)
     end transform
@@ -237,11 +241,15 @@ object EvalRewriter:
         ).withSpan(span)
       }
 
-      // 2. the eval call (passing bind / bindVar args).
+      // 2. the eval call (passing bind / bindVar args). 3-arg form
+      // includes the empty `expectedType` sentinel that
+      // `EvalTypeAnnotate` fills in with the typer-known `T`.
       val bindArgs: List[Tree] = captured.map { c =>
         if c.isVar then buildBindVar(c.name, span) else buildBind(c, span)
       }
-      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ buildArray(bindArgs, span))
+      val arrayArg = buildArray(bindArgs, span)
+      val tpeLit = Literal(Constant("")).withSpan(span)
+      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit)
       val resultDef = ValDef(
         Names.EvalResult.toTermName,
         TypeTree(),
@@ -454,10 +462,25 @@ object EvalRewriter:
       val tpeLit = Literal(Constant("")).withSpan(span)
       Apply(bindFn, nameLit :: cellRef :: tpeLit :: Nil).withSpan(span)
 
-    /** Build `scala.Array(elems...)`. */
+    /** Build `scala.Array(elems...)`, or `scala.Array.empty[Eval.Binding]`
+     *  when `elems` is empty. The typed-empty form is critical: a bare
+     *  `scala.Array()` infers `Array[Nothing]`, which then unifies the
+     *  surrounding `eval[T](..., empty, "")` call's `T = Nothing` and
+     *  the wrapper compiles with `def __run__: Nothing`, rejecting
+     *  every body.
+     */
     private def buildArray(elems: List[Tree], span: Span)(using Context): Tree =
-      val arrayApply = ReplCompiler.selectFqn("scala.Array.apply", span)
-      Apply(arrayApply, elems).withSpan(span)
+      if elems.isEmpty then
+        val emptyRef = ReplCompiler.selectFqn("scala.Array.empty", span)
+        val bindingType =
+          Select(
+            ReplCompiler.selectFqn("dotty.tools.repl.Eval", span),
+            "Binding".toTypeName
+          ).withSpan(span)
+        TypeApply(emptyRef, bindingType :: Nil).withSpan(span)
+      else
+        val arrayApply = ReplCompiler.selectFqn("scala.Array.apply", span)
+        Apply(arrayApply, elems).withSpan(span)
 
     private def makeFqn(fqn: String, span: Span)(using Context): Tree =
       ReplCompiler.selectFqn(fqn, span)

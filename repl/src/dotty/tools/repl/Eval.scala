@@ -115,9 +115,15 @@ object Eval:
   def bindGiven(name: String, value: Any, sourceType: String): Binding =
     new Binding(name, value, isVar = false, isGiven = true, sourceType)
 
-  /** Adapter installed by the running REPL driver. */
+  /** Adapter installed by the running REPL driver. The `expectedType`
+   *  argument is the source-level rendering of the type argument the
+   *  caller wrote at the `eval[T](...)` call site. The empty string
+   *  means the caller didn't pin a type, in which case the runtime
+   *  uses `Any` as the wrapper's return type and relies on the call
+   *  site's `asInstanceOf[T]` cast.
+   */
   trait Adapter:
-    def evalCode(code: String, bindings: Array[Binding]): Any
+    def evalCode(code: String, bindings: Array[Binding], expectedType: String): Any
 
   private val active = new ThreadLocal[Adapter]
 
@@ -127,25 +133,35 @@ object Eval:
     try thunk
     finally if prev == null then active.remove() else active.set(prev)
 
-  /** Compile and run `code` against the current REPL session.
-   */
+  /** Compile and run `code` against the current REPL session. */
   def eval[T](code: String): T =
-    evalImpl[T](code, Array.empty[Binding])
+    evalImpl[T](code, Array.empty[Binding], "")
 
   /** Like `eval(code)` but with explicit bindings. The REPL parser-stage
    *  rewriter dispatches to this overload when there are lambda-local
    *  names to capture.
    */
   def eval[T](code: String, bindings: Array[Binding]): T =
-    evalImpl[T](code, bindings)
+    evalImpl[T](code, bindings, "")
 
-  private def evalImpl[T](code: String, bindings: Array[Binding]): T =
+  /** Like `eval(code, bindings)` but also pins the body's expected
+   *  return type so the eval driver type-checks the body against `T`
+   *  rather than `Any`. The post-typer phase `EvalTypeAnnotate` fills
+   *  in the type string from the typed `TypeApply`'s argument.
+   *
+   *  When `expectedType` is empty the wrapper's return type defaults
+   *  to `Any` and the cast at the call site is the only check.
+   */
+  def eval[T](code: String, bindings: Array[Binding], expectedType: String): T =
+    evalImpl[T](code, bindings, expectedType)
+
+  private def evalImpl[T](code: String, bindings: Array[Binding], expectedType: String): T =
     val a = active.get
     if a == null then
       throw new IllegalStateException(
         "eval(...) requires an active dotty REPL session"
       )
-    a.evalCode(code, bindings).asInstanceOf[T]
+    a.evalCode(code, bindings, expectedType).asInstanceOf[T]
 
   /** Compile `code` against `classLoader`'s classpath using a fresh,
    *  standalone Driver, with each `Binding` exposed as a method parameter
@@ -164,7 +180,8 @@ object Eval:
       bindings: Array[Binding],
       replOutDir: AbstractFile,
       replWrapperImports: Array[String],
-      compilerSettings: Array[String]
+      compilerSettings: Array[String],
+      expectedType: String
   ): Any =
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
@@ -235,11 +252,19 @@ object Eval:
     // receives `j` as a binding the same way an outer eval would.
     val rewrittenCode = rewriteUserCode(code, bindings)
 
+    // Pin the wrapper's return type to the caller's `T` when we have it.
+    // The body then type-checks against `T` and a mismatch surfaces as a
+    // compile error from the eval driver instead of the usual runtime
+    // ClassCastException at the call site's `.asInstanceOf[T]`.
+    val returnType = if expectedType.isEmpty then "Any" else expectedType
+
     val bodyBlock =
       if varPrelude.isEmpty && varPostlude.isEmpty then rewrittenCode
       else
+        // Ascribe `__eval_result__` as the return type so the body is
+        // type-checked against `T` even on the var-sync path.
         s"""$varPrelude
-           |  val __eval_result__ : Any = {
+           |  val __eval_result__ : $returnType = {
            |    $rewrittenCode
            |  }
            |$varPostlude
@@ -247,7 +272,7 @@ object Eval:
 
     val source =
       s"""${importBlock}object $wrapperName {
-         |  def __run__$params: Any = {
+         |  def __run__$params: $returnType = {
          |    $bodyBlock
          |  }
          |}
@@ -255,9 +280,7 @@ object Eval:
 
     compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
       case Left(errs) =>
-        throw new RuntimeException(
-          s"eval failed to compile:\n${errs.mkString("\n")}\n\nGenerated source:\n$source"
-        )
+        throw new EvalCompileException(errs.toArray, source)
       case Right(()) =>
 
     // Use a custom classloader for the eval-compiled wrapper that

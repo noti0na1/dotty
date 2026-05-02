@@ -286,8 +286,8 @@ class ReplDriver(settings: Array[String],
    *  code this driver runs. Forwards to `evalDynamic`.
    */
   private val evalAdapter: Eval.Adapter = new Eval.Adapter {
-    def evalCode(code: String, bindings: Array[Eval.Binding]): Any =
-      evalDynamic(code, bindings)
+    def evalCode(code: String, bindings: Array[Eval.Binding], expectedType: String): Any =
+      evalDynamic(code, bindings, expectedType)
   }
 
   /** Runtime `eval(code, bindings*)` callback. Compiles via a fresh,
@@ -301,7 +301,7 @@ class ReplDriver(settings: Array[String],
    *  `-explain`, etc.) so language features enabled at the REPL prompt
    *  (e.g. `experimental.captureChecking`) apply inside eval bodies too.
    */
-  private def evalDynamic(code: String, bindings: Array[Eval.Binding]): Any =
+  private def evalDynamic(code: String, bindings: Array[Eval.Binding], expectedType: String): Any =
     val state = currentState
     if state == null then
       throw new IllegalStateException("Eval.eval has no current REPL state")
@@ -324,7 +324,7 @@ class ReplDriver(settings: Array[String],
     // Forward CLI settings from the live session (minus those incompatible
     // with the eval driver's standalone setup).
     val forwardedSettings = settings.filterNot(incompatibleOptions.contains)
-    Eval.evalIsolated(code, classLoader, bindings, replOutDir, replWrapperImports, forwardedSettings)
+    Eval.evalIsolated(code, classLoader, bindings, replOutDir, replWrapperImports, forwardedSettings, expectedType)
   end evalDynamic
 
   // TODO: i5069

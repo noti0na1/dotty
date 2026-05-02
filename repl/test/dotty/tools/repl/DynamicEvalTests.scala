@@ -101,6 +101,21 @@ class DynamicEvalTests extends ReplTest:
     assertContains("List(10, 20, 30)", storedOutput())
   }
 
+  @Test def dynamicDispatchOverFunctionNames = initially {
+    // Dispatching on a name held in a String. `f` and `g` live at
+    // REPL session level, so they're reachable inside the eval body
+    // via the auto-injected `import rs$line$N.*`. The lambda param
+    // `op` is captured by the rewriter (as a String) but only used
+    // for the s-interpolation that builds the body string; the body
+    // itself never references `op` and instead calls the named
+    // session-level function directly.
+    run("""|def f(i: Int) = i * 2
+           |def g(i: Int) = i - 2
+           |val ops = List("f", "g")
+           |val r: List[Int] = ops.map(op => eval[Int](s"$op(2)"))""".stripMargin)
+    assertContains("val r: List[Int] = List(4, 0)", storedOutput())
+  }
+
   // ===========================================================================
   // 3. Polymorphic return type T: eval composes at any expression position.
   // ===========================================================================
@@ -116,8 +131,45 @@ class DynamicEvalTests extends ReplTest:
   }
 
   @Test def wrongAscriptionFailsAtRuntime = initially {
+    // Without an explicit `[T]` the typer can't propagate `Int` from
+    // the val ascription back through eval's overload resolution, so
+    // T defaults to Nothing and the post-typer phase falls back to
+    // `Any` as the wrapper return type. The mismatch surfaces only
+    // at the call-site cast.
     run("""val r: Int = eval("\"not an int\"")""")
     assertContains("ClassCastException", storedOutput())
+  }
+
+  @Test def explicitTypeArgFailsAtCompile = initially {
+    // With an explicit `[Int]` the post-typer phase pins the wrapper's
+    // return type, so a mismatch becomes a compile error from the
+    // eval driver before any code runs.
+    run("""val r: Int = eval[Int]("false")""")
+    val out = storedOutput()
+    assertContains("eval failed to compile", out)
+    assertContains("Boolean", out)
+    assertContains("Required: Int", out)
+  }
+
+  @Test def explicitTypeArgStringNotInt = initially {
+    run("""val r: Int = eval[Int]("\"hi\"")""")
+    val out = storedOutput()
+    assertContains("eval failed to compile", out)
+    assertContains("Required: Int", out)
+  }
+
+  @Test def explicitTypeArgGenericMismatch = initially {
+    // Body returns `List[String]`, the type arg pins `List[Int]`;
+    // each element fails individually.
+    run("""val r: List[Int] = eval[List[Int]]("List(\"a\", \"b\")")""")
+    val out = storedOutput()
+    assertContains("eval failed to compile", out)
+    assertContains("Required: Int", out)
+  }
+
+  @Test def explicitGenericTypeArgPasses = initially {
+    run("""val r: List[Int] = eval[List[Int]]("List(1, 2, 3)")""")
+    assertContains("val r: List[Int] = List(1, 2, 3)", storedOutput())
   }
 
   // ===========================================================================
@@ -812,6 +864,23 @@ class DynamicEvalTests extends ReplTest:
     val out = storedOutput()
     assertTrue(s"expected an error, got:\n$out",
       out.contains("failed to compile") || out.contains("Error") || out.contains("ClassCastException"))
+  }
+
+  @Test def compileErrorIsEvalCompileException = initially {
+    // Compile-time errors arrive as `EvalCompileException`, not the
+    // generic `RuntimeException`. The exception type is shared across
+    // the eval / REPL classloader boundary so the user can catch it
+    // by name and inspect its structured `errors` field.
+    run(
+      """|import dotty.tools.repl.EvalCompileException
+         |val r: String =
+         |  try
+         |    eval[Int]("false")
+         |    "no error"
+         |  catch case e: EvalCompileException =>
+         |    s"caught ${e.errors.length} error(s)"""".stripMargin
+    )
+    assertContains("""val r: String = "caught 1 error(s)"""", storedOutput())
   }
 
   // ===========================================================================

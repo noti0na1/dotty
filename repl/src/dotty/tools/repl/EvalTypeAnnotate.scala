@@ -5,7 +5,7 @@ import dotc.ast.tpd
 import dotc.core.Constants.Constant
 import dotc.core.Contexts.*
 import dotc.core.Phases.Phase
-import dotc.core.Symbols.{NoSymbol, Symbol, requiredModule}
+import dotc.core.Symbols.{NoSymbol, Symbol, defn, requiredModule}
 import dotc.core.Types.Type
 
 /** Post-typer phase that fills in the source-level type of every
@@ -51,23 +51,43 @@ class EvalTypeAnnotate extends Phase:
     if annotated ne tree then ctx.compilationUnit.tpdTree = annotated
 
   private class BindAnnotator extends TreeMap:
-    override def transform(tree: Tree)(using Context): Tree = tree match
-      case app @ Apply(fun, name :: value :: (sentinel @ Literal(Constant(""))) :: Nil)
-          if isEvalBindCall(fun) =>
-        val isVar = fun.symbol.name.toString == "bindVar"
-        // For `bindVar`, the captured value is a `VarCell` (an
-        // `AtomicReference[T]`). The runtime evaluator already wraps
-        // the recorded source type back into `AtomicReference[...]`
-        // when synthesising the wrapper signature, so we want the
-        // inner `T`, not the cell type itself.
-        val tpe = if isVar then EvalTypeAnnotate.unwrapCellType(value.tpe) else value.tpe
-        val tpeStr = EvalTypeAnnotate.renderType(tpe)
-        if tpeStr.isEmpty then app
-        else
-          val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
-          cpy.Apply(app)(fun, name :: value :: tpeLit :: Nil)
-      case _ =>
-        super.transform(tree)
+    override def transform(tree: Tree)(using Context): Tree =
+      // Handle the binding-side calls first (Eval.bind/bindVar/bindGiven),
+      // then the eval call itself. We need both because the eval call
+      // wraps the bind calls inside its `Array(...)` argument; we want
+      // the inner ones rewritten before the outer one.
+      val annotated = tree match
+        case app @ Apply(fun, name :: value :: (sentinel @ Literal(Constant(""))) :: Nil)
+            if isEvalBindCall(fun) =>
+          val isVar = fun.symbol.name.toString == "bindVar"
+          // For `bindVar`, the captured value is a `VarCell` (an
+          // `AtomicReference[T]`). The runtime evaluator already wraps
+          // the recorded source type back into `AtomicReference[...]`
+          // when synthesising the wrapper signature, so we want the
+          // inner `T`, not the cell type itself.
+          val tpe = if isVar then EvalTypeAnnotate.unwrapCellType(value.tpe) else value.tpe
+          val tpeStr = EvalTypeAnnotate.renderType(tpe)
+          if tpeStr.isEmpty then app
+          else
+            val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
+            cpy.Apply(app)(fun, name :: value :: tpeLit :: Nil)
+
+        case app @ Apply(fun, code :: bindings :: (sentinel @ Literal(Constant(""))) :: Nil)
+            if isEvalCall(fun) =>
+          // Render the `T` from the surrounding `eval[T](...)` typed
+          // TypeApply so the eval body's wrapper compiles with `T` as
+          // its return type. Falls back to the empty sentinel (and the
+          // call-site cast) when `T` mentions a locally-scoped symbol.
+          val tArg = extractTypeArg(fun)
+          val tpeStr = if tArg eq null then "" else EvalTypeAnnotate.renderType(tArg)
+          if tpeStr.isEmpty then app
+          else
+            val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
+            cpy.Apply(app)(fun, code :: bindings :: tpeLit :: Nil)
+
+        case _ => tree
+
+      super.transform(annotated)
 
     private def isEvalBindCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
@@ -75,6 +95,23 @@ class EvalTypeAnnotate extends Phase:
       sym != NoSymbol
         && (name == "bind" || name == "bindVar" || name == "bindGiven")
         && sym.owner == EvalTypeAnnotate.evalModuleClass
+
+    private def isEvalCall(fun: Tree)(using Context): Boolean =
+      val sym = fun.symbol
+      sym != NoSymbol
+        && sym.name.toString == "eval"
+        && sym.owner == EvalTypeAnnotate.evalModuleClass
+
+    /** Extract the `T` from a typed `eval[T](...)` `fun` tree. The
+     *  parser-stage rewriter never strips the user's `TypeApply`, so
+     *  after typer the tree is `TypeApply(Select(Eval, "eval"), tpt)`.
+     *  Returns `null` when the tree doesn't carry a type argument
+     *  (e.g. someone used the SAM/explicit-overload form), in which
+     *  case the rest of the pipeline keeps the empty sentinel.
+     */
+    private def extractTypeArg(fun: Tree)(using Context): Type | Null = fun match
+      case TypeApply(_, tArg :: _) => tArg.tpe
+      case _ => null
   end BindAnnotator
 
 end EvalTypeAnnotate
@@ -123,12 +160,29 @@ object EvalTypeAnnotate:
     if tpe == null || !tpe.exists || tpe.isError then return ""
     val widened = tpe.widen
     if !widened.exists || widened.isError then return ""
+    if isUselessType(widened) then return ""
     if mentionsLocallyScopedSymbol(widened) then return ""
     // Disable colours so the rendered string never contains ANSI
     // escapes that would later confuse the eval driver's parser.
     val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
     try widened.show(using printCtx)
     catch case _: Throwable => ""
+
+  /** A type that's not worth pinning into the wrapper signature.
+   *
+   *  `Nothing` shows up when the typer can't constrain `T` (an
+   *  ascription like `val r: Int = eval("1+2")` doesn't propagate
+   *  `Int` through overload resolution; T defaults to its lower
+   *  bound). Pinning the wrapper's return type to `Nothing` would
+   *  reject every body. Falling back to the empty sentinel keeps
+   *  the existing call-site cast behaviour for these cases.
+   *
+   *  `Null` (the bottom of the AnyRef hierarchy under explicit
+   *  nulls) would have the same problem.
+   */
+  private def isUselessType(tpe: Type)(using Context): Boolean =
+    val sym = tpe.typeSymbol
+    sym.exists && (sym == defn.NothingClass || sym == defn.NullClass)
 
   /** True iff `tpe` mentions a symbol that wouldn't resolve in the
    *  fresh eval wrapper module. The two cases that matter in practice:
