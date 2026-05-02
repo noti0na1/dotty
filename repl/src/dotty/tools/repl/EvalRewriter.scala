@@ -305,6 +305,43 @@ object EvalRewriter:
       if seen.isEmpty then ""
       else seen.values.mkString("[", ", ", "]")
 
+    /** Walk a for-comprehension's enumerator list, accumulating
+     *  identifier names from each generator/alias pattern into a
+     *  cumulative scope. Returns the transformed enumerators and
+     *  the cumulative list of names for the body's scope.
+     */
+    private def transformForEnums(enums: List[Tree])(using Context): (List[Tree], List[CapturedName]) =
+      val acc = mutable.ListBuffer.empty[CapturedName]
+      val out = enums.map {
+        case g @ GenFrom(pat, expr, mode) =>
+          val newExpr = withScope(acc.toList)(transform(expr))
+          extractPatNames(pat).foreach { name =>
+            acc += CapturedName(name, isVar = false)
+          }
+          untpd.cpy.GenFrom(g)(pat, newExpr, mode)
+        case g @ GenAlias(pat, expr) =>
+          val newExpr = withScope(acc.toList)(transform(expr))
+          extractPatNames(pat).foreach { name =>
+            acc += CapturedName(name, isVar = false)
+          }
+          untpd.cpy.GenAlias(g)(pat, newExpr)
+        case other =>
+          // `if guard` filter clauses arrive as bare Tree expressions.
+          // Transform with the scope accumulated so far.
+          withScope(acc.toList)(transform(other))
+      }
+      (out, acc.toList)
+
+    /** Extract the identifier names a for-comprehension pattern binds.
+     *  Currently only handles `Ident` patterns (`for x <- xs`); other
+     *  shapes (tuple destructuring, case patterns) return Nil and
+     *  silently miss being captured into the body's eval bindings.
+     */
+    private def extractPatNames(pat: Tree)(using Context): List[String] = pat match
+      case Ident(name) if name.toString.nonEmpty && name.toString != "_" =>
+        List(name.toString)
+      case _ => Nil
+
     /** The class's type parameters, harvested from the primary
      *  constructor's first paramlist when it's a TypeDef list.
      */
@@ -431,6 +468,25 @@ object EvalRewriter:
       catch case _: Throwable => name
 
     override def transform(tree: Tree)(using Context): Tree = tree match
+      // For-comprehension (`for x <- xs yield expr` or `for x <- xs do
+      // body`). The for-comprehension only desugars to lambda calls
+      // (`xs.map(x => expr)`) at the typer stage, so at parser stage
+      // we still see `ForYield`/`ForDo` with a list of enumerators.
+      // Walk the enumerators in order, accumulating their pattern's
+      // identifier names onto the scope before transforming the next
+      // generator's source / the guard / the body. We only handle
+      // simple `Ident` patterns; tuple / case patterns silently fall
+      // through (the body's eval call won't see them as bindings).
+      case fy @ ForYield(enums, expr) =>
+        val (newEnums, accNames) = transformForEnums(enums)
+        val newExpr = withScope(accNames)(transform(expr))
+        untpd.cpy.ForYield(fy)(newEnums, newExpr)
+
+      case fd @ ForDo(enums, body) =>
+        val (newEnums, accNames) = transformForEnums(enums)
+        val newBody = withScope(accNames)(transform(body))
+        untpd.cpy.ForDo(fd)(newEnums, newBody)
+
       // Lambda: its parameters become locals visible inside the body.
       // Lambda parameters are always immutable.
       case fn @ Function(args, body) =>

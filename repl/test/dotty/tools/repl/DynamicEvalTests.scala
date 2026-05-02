@@ -795,6 +795,18 @@ class DynamicEvalTests extends ReplTest:
     assertContains("""val b: String = "hi"""", out)
   }
 
+  // ---------------------------------------------------------------------------
+  // Type parameters of an enclosing method, copied onto the wrapper.
+  //
+  // The rewriter records every enclosing DefDef's type-param clause and emits
+  // it onto the wrapper's `def __run__[T, U <: AnyRef, ...]` signature.
+  // Erasure means no type argument needs to flow through `Method.invoke`; the
+  // body just needs `T` to be a name in scope so it type-checks. Bindings whose
+  // types mention these type params (`xs: List[T]`) are rendered as-is.
+  // Anchor-aware shadowing detection keeps an outer DefDef's `T` from silently
+  // binding to an inner same-named one in the wrapper.
+  // ---------------------------------------------------------------------------
+
   @Test def typeParameterNameInScopeInsideEval = initially {
     // The rewriter copies the enclosing DefDef's type-param clause
     // onto the wrapper's `def __run__[T]` signature, so a body that
@@ -845,6 +857,16 @@ class DynamicEvalTests extends ReplTest:
     assertContains("(List(\"hello\"), 100)", storedOutput())
   }
 
+  // ---------------------------------------------------------------------------
+  // Local type aliases.
+  //
+  // Aliases declared inside a method scope (`type MyInt = Int`) are dealiased
+  // before the binding type is rendered: the wrapper module isn't lexically
+  // inside the method, so `MyInt` wouldn't resolve there. Session-level
+  // aliases are kept as-is — they're nameable through the rewriter's
+  // `import rs$line$N.*` bridge.
+  // ---------------------------------------------------------------------------
+
   @Test def localTypeAliasDealiased = initially {
     // A type alias defined inside the method scope can't be named
     // inside the wrapper module (its symbol is term-owned). The
@@ -857,6 +879,18 @@ class DynamicEvalTests extends ReplTest:
            |f()""".stripMargin)
     assertContains("val res0: Int = 43", storedOutput())
   }
+
+  // ---------------------------------------------------------------------------
+  // Class-scope capture: eval inside a class method.
+  //
+  // The rewriter handles a Template (class body) by pushing the class's type
+  // parameters and val/var members onto the scope/typeParam stacks. Each
+  // member is captured under both its bare name (read-only val) and a
+  // `<name>__field` shadow-safe binding (cell-backed for var members). A
+  // synthetic `__this__` binding holds the outer instance; the runtime body
+  // rewrite step rewrites `this.<x>` → `<x>__field` (or → `__this__.<x>`
+  // for non-member selections like method calls).
+  // ---------------------------------------------------------------------------
 
   @Test def classScopeGetterAndSetter = initially {
     // The motivating example: an `eval` inside a class method that
@@ -893,6 +927,21 @@ class DynamicEvalTests extends ReplTest:
     )
     assertContains("val res0: Int = 25", storedOutput())
   }
+
+  // ---------------------------------------------------------------------------
+  // Multi-line eval bodies.
+  //
+  // The body is spliced inside the wrapper's `def __run__ = { ... }` braces,
+  // so Scala 3 parses it under the brace-based syntax (semicolons / newlines
+  // separate statements; indentation isn't structurally significant at the
+  // top level). The body can still use indentation-sensitive constructs
+  // (`if then ... else`, function literals) inside, as long as they're
+  // self-consistent. When the body goes through `rewriteThisInBody` (class
+  // scope) it round-trips through the parser + pretty-printer; the tests
+  // sidestep `s"..."` interpolations inside such bodies because those don't
+  // round-trip cleanly (per EVAL.md "Pretty-printer round-trip in nested
+  // eval", same caveat).
+  // ---------------------------------------------------------------------------
 
   @Test def multiLineBodyTripleQuoted = initially {
     // The body is a triple-quoted multi-line string. The wrapper
@@ -968,6 +1017,17 @@ class DynamicEvalTests extends ReplTest:
     assertContains("val res1: Int = 16", out)
   }
 
+  // ---------------------------------------------------------------------------
+  // Nested classes (eval inside class B nested in class A).
+  //
+  // The rewriter walks each enclosing Template and captures BOTH classes'
+  // members and type parameters. Each class also pushes its own
+  // `__this__<ClassName>` binding so the body's `<ClassName>.this.x` syntax
+  // resolves to the right enclosing instance. Path-dependent type renderings
+  // (`A.this.B`) are post-processed to the projection form (`A#B`) since the
+  // wrapper module isn't lexically inside any of the outer classes.
+  // ---------------------------------------------------------------------------
+
   @Test def nestedClassReadsOuterMember = initially {
     // Eval inside class B (nested in A) should be able to access A's
     // members via the qualified `A.this.<member>` syntax. The
@@ -1027,6 +1087,10 @@ class DynamicEvalTests extends ReplTest:
     assertContains("val res0: Int = 10", out)
     assertContains("val res1: Int = 15", out)
   }
+
+  // ---------------------------------------------------------------------------
+  // Session-level type aliases (defined at the REPL prompt, NOT in a method).
+  // ---------------------------------------------------------------------------
 
   @Test def sessionTypeAliasPreserved = initially {
     // Session-level aliases (defined at the REPL prompt, not inside
@@ -1098,6 +1162,337 @@ class DynamicEvalTests extends ReplTest:
     assertContains("""val r: String = "pos"""", storedOutput())
   }
 
+  @Test def bodyMatchExtractorTuple = initially {
+    // Tuple destructuring in a match case. The extractor `(a, b)`
+    // binds `a` and `b` for the case body — these stay inside the
+    // body's scope, no rewriter capture needed.
+    run("""val r: Int = eval[Int]("(3, 4) match { case (a, b) => a * 10 + b }")""")
+    assertContains("val r: Int = 34", storedOutput())
+  }
+
+  @Test def bodyMatchListExtractor = initially {
+    // Cons / Nil patterns. Recursive shapes: head + tail.
+    run("""val r: Int = eval[Int]("List(10, 20, 30) match { case h :: t :: _ => h + t; case _ => 0 }")""")
+    assertContains("val r: Int = 30", storedOutput())
+  }
+
+  @Test def bodyMatchTypePattern = initially {
+    // `case x: SomeType =>` types-narrowing pattern.
+    run(
+      """val r: String = eval[String]("(42: Any) match { case s: String => \"str:\" + s; case n: Int => \"int:\" + n.toString; case _ => \"other\" }")"""
+    )
+    assertContains("""val r: String = "int:42"""", storedOutput())
+  }
+
+  @Test def bodyMatchOption = initially {
+    // Pattern matching on Option with both None and Some(v). The
+    // matched option is captured as a lambda parameter (`o`); the
+    // match statement INSIDE the eval body operates on the captured
+    // value at runtime.
+    run(
+      """val r: List[String] = List(Some(1), None, Some(2)).map(o => eval[String]("o match { case Some(n) => n.toString; case None => \"-\" }"))"""
+    )
+    assertContains("""val r: List[String] = List("1", "-", "2")""", storedOutput())
+  }
+
+  @Test def bodyMatchSealedHierarchy = initially {
+    // Pattern matching on a session-defined sealed hierarchy. The
+    // `import rs$line$N.*` runtime bridge brings the hierarchy into
+    // the eval body's scope.
+    run(
+      """|sealed trait Shape
+         |case class Circle(r: Double) extends Shape
+         |case class Square(s: Double) extends Shape
+         |def area(sh: Shape): Double = eval[Double](
+         |  "sh match { case Circle(r) => 3.14 * r * r; case Square(s) => s * s }")
+         |area(Circle(1.0))
+         |area(Square(2.0))""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Double = 3.14", out)
+    assertContains("val res1: Double = 4.0", out)
+  }
+
+  @Test def bodyMatchNestedExtractor = initially {
+    // Nested extractors: case Some((a, b)) => ...
+    run(
+      """val r: Int = eval[Int]("(Some((3, 4)): Option[(Int, Int)]) match { case Some((a, b)) => a + b; case None => 0 }")"""
+    )
+    assertContains("val r: Int = 7", storedOutput())
+  }
+
+  @Test def bodyMatchAtPattern = initially {
+    // `case x @ pattern => ...` — the binder `x` references the
+    // whole matched object while the inner pattern still narrows.
+    run(
+      """val r: String = eval[String]("List(1, 2, 3) match { case xs @ (h :: _) => xs.length.toString + \":\" + h.toString; case _ => \"empty\" }")"""
+    )
+    assertContains("""val r: String = "3:1"""", storedOutput())
+  }
+
+  @Test def bodyMatchPipedAlternative = initially {
+    // `case A | B =>` alternative patterns (no bindings on either
+    // side; binding-with-alternative isn't permitted in Scala).
+    run(
+      """val r: String = eval[String]("3 match { case 1 | 2 | 3 => \"low\"; case 4 | 5 => \"mid\"; case _ => \"high\" }")"""
+    )
+    assertContains("""val r: String = "low"""", storedOutput())
+  }
+
+  @Test def bodyMatchOnCapturedValue = initially {
+    // The body's `match` selector is a captured method parameter.
+    // The cases pattern-match on its actual runtime value.
+    run(
+      """|def classify(input: Any): String = eval[String](
+         |  "input match { case _: Int => \"int\"; case _: String => \"str\"; case _: List[?] => \"list\"; case _ => \"other\" }")
+         |classify(42)
+         |classify("hi")
+         |classify(List(1, 2))
+         |classify(true)""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("""val res0: String = "int"""", out)
+    assertContains("""val res1: String = "str"""", out)
+    assertContains("""val res2: String = "list"""", out)
+    assertContains("""val res3: String = "other"""", out)
+  }
+
+  @Test def bodyMatchMultipleGuards = initially {
+    // Multiple cases each with their own guard.
+    run(
+      """val r: String = eval[String]("val n = 7; n match { case x if x < 0 => \"neg\"; case 0 => \"zero\"; case x if x % 2 == 0 => \"even\"; case _ => \"odd\" }")"""
+    )
+    assertContains("""val r: String = "odd"""", storedOutput())
+  }
+
+  @Test def bodyForComprehensionYield = initially {
+    // For-comprehension with `yield` produces a List. Generators and
+    // intermediate bindings work normally inside the body.
+    run("""val r: List[Int] = eval("for x <- List(1, 2, 3); y = x * 10 yield x + y")""")
+    assertContains("val r: List[Int] = List(11, 22, 33)", storedOutput())
+  }
+
+  @Test def bodyForComprehensionWithGuard = initially {
+    // Multiple generators + guard. The body parses fine inside the
+    // wrapper's braces and behaves identically to a top-level for.
+    run("""val r: List[(Int, Int)] = eval("for a <- List(1,2,3); b <- List(10,20) if a + b > 12 yield (a, b)")""")
+    assertContains("val r: List[(Int, Int)] = List((1, 20), (2, 20), (3, 10), (3, 20))", storedOutput())
+  }
+
+  @Test def bodyForLoopSideEffects = initially {
+    // `for` without `yield` runs for side effects. Mutating an outer
+    // var (captured) propagates back via the var-cell sync-back.
+    run(
+      """|var sum: Int = 0
+         |eval[Unit]("for x <- 1 to 5 do sum = sum + x")
+         |sum""".stripMargin
+    )
+    // The trailing `sum` shows up via the var-display path
+    // (`var sum: Int = 15`) since `sum` is a top-level var.
+    assertContains("var sum: Int = 15", storedOutput())
+  }
+
+  @Test def bodyTryCatchFinally = initially {
+    // try/catch with multiple cases plus a finally that mutates an
+    // outer var. Tests both exception-handling path selection AND
+    // var-cell sync-back from a finally block.
+    val body =
+      "try { throw new IllegalArgumentException(\\\"bad\\\") } " +
+      "catch { case _: NullPointerException => \\\"npe\\\"; " +
+      "case e: IllegalArgumentException => e.getMessage } " +
+      "finally { ran = ran + 1 }"
+    run(
+      "var ran: Int = 0\n" +
+      s"val r: String = eval[String](\"$body\")\n" +
+      "r\n" +
+      "ran"
+    )
+    val out = storedOutput()
+    assertContains("val r: String = \"bad\"", out)
+    // The trailing `ran` references the top-level var; the REPL
+    // shows it via the var-display path.
+    assertContains("var ran: Int = 1", out)
+  }
+
+  @Test def bodyIfElseIfChain = initially {
+    // if / else if / else chain.
+    run("""val r: String = eval[String]("val n = 7; if n < 0 then \"neg\" else if n == 0 then \"zero\" else if n < 10 then \"small\" else \"big\"")""")
+    assertContains("""val r: String = "small"""", storedOutput())
+  }
+
+  @Test def bodyNestedWhile = initially {
+    // Nested while loops accumulating into an outer-captured var.
+    run(
+      """|var total: Int = 0
+         |eval[Unit]("var i = 0; while i < 3 do { var j = 0; while j < 3 do { total = total + 1; j = j + 1 }; i = i + 1 }")
+         |total""".stripMargin
+    )
+    assertContains("var total: Int = 9", storedOutput())
+  }
+
+  @Test def bodyDoWhile = initially {
+    // Scala 3 doesn't have `do { ... } while (...)` syntax, but the
+    // run-once-then-check idiom still works via a regular while.
+    run("""val r: Int = eval[Int]("var n = 5; var p = 1; while { p = p * n; n = n - 1; n > 0 } do (); p")""")
+    assertContains("val r: Int = 120", storedOutput())
+  }
+
+  // ===========================================================================
+  // 9b. Recursion, both INSIDE and OUTSIDE eval.
+  // ===========================================================================
+
+  @Test def bodyRecursiveDef = initially {
+    // The body declares its own recursive `def`. (`bodyDefinesLocalDef`
+    // already covers a one-shot recursive def with factorial; here we
+    // exercise tail-recursion-shaped code.)
+    run("""val r: Int = eval[Int]("def loop(n: Int, acc: Int): Int = if n == 0 then acc else loop(n - 1, acc + n); loop(10, 0)")""")
+    assertContains("val r: Int = 55", storedOutput())
+  }
+
+  @Test def bodyMutuallyRecursiveDefs = initially {
+    // Mutually recursive `def`s declared inside the body. Compiled in
+    // the wrapper as locals; calls resolve forward and backward.
+    run(
+      """val r: Boolean = eval[Boolean]("def isEven(n: Int): Boolean = if n == 0 then true else isOdd(n - 1); def isOdd(n: Int): Boolean = if n == 0 then false else isEven(n - 1); isEven(10)")"""
+    )
+    assertContains("val r: Boolean = true", storedOutput())
+  }
+
+  @Test def bodyCallsOuterRecursiveMethod = initially {
+    // The body calls a REPL-session-level recursive method. Classes
+    // and recursive methods on the session level are reached via the
+    // `import rs$line$N.*` runtime bridge; the eval body just sees
+    // the name `fib` in scope.
+    run(
+      """|def fib(n: Int): Int = if n < 2 then n else fib(n - 1) + fib(n - 2)
+         |val r: Int = eval[Int]("fib(10)")""".stripMargin
+    )
+    assertContains("val r: Int = 55", storedOutput())
+  }
+
+  @Test def bodyCallsOuterRecursiveMethodWithCapturedParam = initially {
+    // The body's call passes a *captured* lambda parameter as the
+    // argument to the recursive method.
+    run(
+      """|def fact(n: Int): Int = if n <= 1 then 1 else n * fact(n - 1)
+         |val r: List[Int] = List(0, 1, 4, 5).map(z => eval[Int]("fact(z)"))""".stripMargin
+    )
+    assertContains("val r: List[Int] = List(1, 1, 24, 120)", storedOutput())
+  }
+
+  @Test def evalInsideRecursiveMethod = initially {
+    // The recursive method itself contains an eval call. Each
+    // recursion step issues a fresh eval; the captured `n` is
+    // re-bound per call.
+    run(
+      """|def countDown(n: Int): String =
+         |  if n == 0 then "done"
+         |  else eval[String]("countDown(n - 1)")
+         |countDown(3)""".stripMargin
+    )
+    assertContains("""val res0: String = "done"""", storedOutput())
+  }
+
+  @Test def evalInsideTailRecursiveMethod = initially {
+    // Captures the lambda parameter and recurses through eval. The
+    // captured `acc` is the running accumulator.
+    run(
+      """|def sumTo(n: Int, acc: Int): Int =
+         |  if n == 0 then acc
+         |  else eval[Int]("sumTo(n - 1, acc + n)")
+         |sumTo(10, 0)""".stripMargin
+    )
+    assertContains("val res0: Int = 55", storedOutput())
+  }
+
+  // ===========================================================================
+  // 9c. Control flow OUTSIDE the eval call (eval inside while/for/try/if).
+  //
+  // The rewriter walks lambda / block / DefDef scopes regardless of the
+  // surrounding control structure, so an eval inside a `while` body or a
+  // `for` comprehension's expression captures the right names.
+  // ===========================================================================
+
+  @Test def whileLoopAroundEvalMutatesCapturedVar = initially {
+    // The eval call lives inside a while-loop body. Each iteration
+    // re-binds the (cell-backed) outer var and propagates back.
+    run(
+      """|def f(): Int =
+         |  var i: Int = 0
+         |  var n: Int = 0
+         |  while i < 5 do
+         |    eval[Unit]("n = n + i")
+         |    i = i + 1
+         |  n
+         |f()""".stripMargin
+    )
+    assertContains("val res0: Int = 10", storedOutput())
+  }
+
+  @Test def forLoopAroundEvalCallsEachIteration = initially {
+    // The eval is the expression body of a `for ... yield`. Each
+    // iteration captures the for-binding `x` lambda-style and
+    // produces one element.
+    run("""val r: List[Int] = (for x <- List(1, 2, 3, 4) yield eval[Int]("x * x"))""")
+    assertContains("val r: List[Int] = List(1, 4, 9, 16)", storedOutput())
+  }
+
+  @Test def forLoopWithMultipleGeneratorsAroundEval = initially {
+    // Multiple generators: both `a` and `b` are in scope as captured
+    // bindings inside the eval body.
+    run(
+      """val r: List[Int] =
+        |  (for a <- List(1, 2); b <- List(10, 20) yield eval[Int]("a * 100 + b"))""".stripMargin
+    )
+    assertContains("val r: List[Int] = List(110, 120, 210, 220)", storedOutput())
+  }
+
+  @Test def tryAroundEvalCatchingEvalCompileError = initially {
+    // try/catch surrounds eval. `EvalCompileException` is a normal
+    // RuntimeException; user code can catch it just like any other.
+    run(
+      """|import dotty.tools.repl.EvalCompileException
+         |def safeEval(): String =
+         |  try eval[Int]("undefinedSymbol").toString
+         |  catch case _: EvalCompileException => "compile-failed"
+         |safeEval()""".stripMargin
+    )
+    assertContains("""val res0: String = "compile-failed"""", storedOutput())
+  }
+
+  @Test def ifBranchesEachCallEval = initially {
+    // Both branches of an if call eval; the captured method param is
+    // visible in either branch's body.
+    run(
+      """|def classify(n: Int): String =
+         |  if n >= 0 then eval[String]("\"non-negative: \" + n.toString")
+         |  else eval[String]("\"negative: \" + n.toString")
+         |classify(5)
+         |classify(-3)""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("""val res0: String = "non-negative: 5"""", out)
+    assertContains("""val res1: String = "negative: -3"""", out)
+  }
+
+  @Test def matchExpressionAroundEval = initially {
+    // Each case of a `match` calls eval. Binding-by-pattern (e.g.
+    // `case Some(v) =>` introducing `v`) is *not* picked up by the
+    // rewriter (case-pattern names aren't on the scope stack), so
+    // the body has to reach values via the matched variable. Here
+    // the body uses the captured method parameter `opt` directly.
+    run(
+      """|def describe(opt: Option[Int]): String = opt match
+         |  case Some(_) => eval[String]("\"got \" + opt.get.toString")
+         |  case None    => eval[String]("\"none\"")
+         |describe(Some(7))
+         |describe(None)""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("""val res0: String = "got 7"""", out)
+    assertContains("""val res1: String = "none"""", out)
+  }
+
   // ===========================================================================
   // 10. Functions defined inside eval, returned and used outside.
   // ===========================================================================
@@ -1129,6 +1524,79 @@ class DynamicEvalTests extends ReplTest:
     run("""|val f: Int => Int = eval("(x: Int) => x * factor")
            |val r: Int = f(7)""".stripMargin)
     assertContains("val r: Int = 70", storedOutput())
+  }
+
+  @Test def returnsCurriedClosureBuiltDynamically = initially {
+    // The motivating example: a method takes a string operator name
+    // and returns a curried `Int => Int => Int` built at call time
+    // by an `eval` body that interpolates the operator into the
+    // function literal. This exercises:
+    //   - dynamic body construction via `s"..."`,
+    //   - the wrapper returning a closure value,
+    //   - the closure crossing the eval / REPL classloader boundary
+    //     as `scala.Function1` (visible as the same Class on both
+    //     sides because the AbstractFileClassLoader delegates
+    //     `scala.*` to the parent loader).
+    run(
+      """|def mkOp(op: String): Int => Int => Int =
+         |  eval[Int => Int => Int](s"i => j => i $op j")
+         |val plus = mkOp("+")
+         |val times = mkOp("*")
+         |plus(2)(3)
+         |times(4)(5)""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 5", out)
+    assertContains("val res1: Int = 20", out)
+  }
+
+  @Test def returnsClosureCapturingMethodParam = initially {
+    // The closure built inside eval captures the method parameter
+    // `n`. Calling the returned closure later applies it to `n`,
+    // even though `n` is no longer in scope at the call site.
+    run(
+      """|def adderFor(n: Int): Int => Int =
+         |  eval[Int => Int]("(x: Int) => x + n")
+         |val addFive = adderFor(5)
+         |val addTen = adderFor(10)
+         |addFive(100)
+         |addTen(100)""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 105", out)
+    assertContains("val res1: Int = 110", out)
+  }
+
+  @Test def returnsClosureMultiArgPartiallyApplied = initially {
+    // A closure of higher arity returned from eval, then partially
+    // applied via a curried-style helper.
+    run(
+      """|val f3: (Int, Int, Int) => Int =
+         |  eval[(Int, Int, Int) => Int]("(a: Int, b: Int, c: Int) => a * 100 + b * 10 + c")
+         |f3(1, 2, 3)""".stripMargin
+    )
+    assertContains("val res0: Int = 123", storedOutput())
+  }
+
+  @Test def returnsListOfClosures = initially {
+    // The body returns a list of closures, each capturing a
+    // different value.
+    run(
+      """|val fs: List[Int => Int] = eval[List[Int => Int]]("List(1, 2, 3).map(k => (x: Int) => x + k)")
+         |fs.map(f => f(100))""".stripMargin
+    )
+    assertContains("val res0: List[Int] = List(101, 102, 103)", storedOutput())
+  }
+
+  @Test def returnedClosureCalledRepeatedly = initially {
+    // The same closure is invoked many times after being returned;
+    // each call re-runs the closure body (no side effects from the
+    // construction beyond what eval itself did once).
+    run(
+      """|val incr: Int => Int = eval[Int => Int]("(x: Int) => x + 1")
+         |val r: List[Int] = List(0, 1, 2, 3).map(incr)""".stripMargin
+    )
+    assertContains("val r: List[Int] = List(1, 2, 3, 4)", storedOutput())
   }
 
   // ===========================================================================
@@ -1230,6 +1698,105 @@ class DynamicEvalTests extends ReplTest:
            |val outer: String = "eval[Int](inner)"
            |val r: Int = eval(outer)""".stripMargin)
     assertContains("val r: Int = 3", storedOutput())
+  }
+
+  // ===========================================================================
+  // 13b. Larger showcase: a symbolic-differentiation engine driven
+  //      entirely by recursive `eval` calls.
+  //
+  // Why this is interesting:
+  //   * The user's code defines a small AST (`Expr` algebra: X, Num,
+  //     Add, Mul, Pow) plus three pieces of plumbing:
+  //       - `show(e)`  prints an `Expr` as a Scala expression string,
+  //                    using `x` as the variable name;
+  //       - `lit(e)`   prints an `Expr` as the SCALA SOURCE that
+  //                    reconstructs it (`Add(Mul(Num(3), Pow(X, 2)), ...)`);
+  //       - `diff(e)`  symbolic differentiation on the AST.
+  //
+  //   * `evalAt(e, x)` evaluates the expression at a runtime point by
+  //     building Scala source `val x = <x>; <show(e)>` and handing it
+  //     to `eval[Int]`. Both the variable's value AND the body's text
+  //     come from runtime data — so this isn't something a macro or
+  //     compile-time inline could do.
+  //
+  //   * `diffAt(e, n, x)` computes the nth derivative at `x`. For
+  //     `n > 0` it RECURSES THROUGH EVAL: the eval body interpolates
+  //     `diff(<e-as-source>)`, the new `n - 1`, and the same `x`,
+  //     then calls `diffAt` again. Each level of recursion spawns a
+  //     fresh wrapper compile that itself invokes `eval`, so an Nth
+  //     derivative produces N+1 nested-eval invocations.
+  //
+  //   * Type safety is preserved end-to-end: `eval[Int]` ascribes the
+  //     return type, the eval driver type-checks the spliced body
+  //     against `Int`, and a body that returned the wrong type would
+  //     fail at the eval-driver compile, not silently as a
+  //     `ClassCastException` at the call site.
+  //
+  // The polynomial used: f(x) = 3x² + 5
+  //   f(2)  = 17       — `evalAt(f, 2)`
+  //   f'(2) = 6·2 = 12 — `evalAt(diff(f), 2)`
+  //   f''(7) = 6       — `diffAt(f, 2, 7)` (recurses twice through eval)
+  // ===========================================================================
+
+  @Test def symbolicDifferentiationViaRecursiveEval = initially {
+    val program =
+      """|sealed trait Expr
+         |case object X extends Expr
+         |case class Num(v: Int) extends Expr
+         |case class Add(a: Expr, b: Expr) extends Expr
+         |case class Mul(a: Expr, b: Expr) extends Expr
+         |case class Pow(b: Expr, n: Int) extends Expr
+         |
+         |def show(e: Expr): String = e match
+         |  case X => "x"
+         |  case Num(v) => v.toString
+         |  case Add(a, b) => s"(${show(a)} + ${show(b)})"
+         |  case Mul(a, b) => s"(${show(a)} * ${show(b)})"
+         |  case Pow(b, n) =>
+         |    if n == 0 then "1"
+         |    else if n == 1 then show(b)
+         |    else (1 until n).foldLeft(show(b))((acc, _) => s"($acc * ${show(b)})")
+         |
+         |def lit(e: Expr): String = e match
+         |  case X => "X"
+         |  case Num(v) => s"Num($v)"
+         |  case Add(a, b) => s"Add(${lit(a)}, ${lit(b)})"
+         |  case Mul(a, b) => s"Mul(${lit(a)}, ${lit(b)})"
+         |  case Pow(b, n) => s"Pow(${lit(b)}, $n)"
+         |
+         |def diff(e: Expr): Expr = e match
+         |  case X => Num(1)
+         |  case Num(_) => Num(0)
+         |  case Add(a, b) => Add(diff(a), diff(b))
+         |  case Mul(a, b) => Add(Mul(diff(a), b), Mul(a, diff(b)))
+         |  case Pow(b, n) => Mul(Mul(Num(n), Pow(b, n - 1)), diff(b))
+         |
+         |def evalAt(e: Expr, x: Int): Int =
+         |  eval[Int](s"val x = $x; ${show(e)}")
+         |
+         |def diffAt(e: Expr, n: Int, x: Int): Int =
+         |  if n == 0 then evalAt(e, x)
+         |  else eval[Int](s"diffAt(diff(${lit(e)}), ${n - 1}, $x)")
+         |
+         |val f: Expr = Add(Mul(Num(3), Pow(X, 2)), Num(5))
+         |evalAt(f, 2)
+         |evalAt(diff(f), 2)
+         |diffAt(f, 0, 2)
+         |diffAt(f, 1, 2)
+         |diffAt(f, 2, 7)
+         |""".stripMargin
+    run(program)
+    val out = storedOutput()
+    // f(2)  = 3*4 + 5
+    assertContains("val res0: Int = 17", out)
+    // f'(2) = 6x at x=2
+    assertContains("val res1: Int = 12", out)
+    // diffAt(f, 0, 2)  = f(2) — a fresh eval roundtrip, no recursion
+    assertContains("val res2: Int = 17", out)
+    // diffAt(f, 1, 2)  = f'(2) — one level of recursive eval
+    assertContains("val res3: Int = 12", out)
+    // diffAt(f, 2, 7)  = f''(7) = 6 — two levels of recursive eval
+    assertContains("val res4: Int = 6", out)
   }
 
   // ===========================================================================
