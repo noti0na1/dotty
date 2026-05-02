@@ -103,8 +103,9 @@ class EvalTypeAnnotate extends Phase:
 
     private def isEvalCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
+      val name = if sym != NoSymbol then sym.name.toString else ""
       sym != NoSymbol
-        && sym.name.toString == "eval"
+        && (name == "eval" || name == "evalSafe")
         && sym.owner == EvalTypeAnnotate.evalModuleClass
 
     /** Extract the `T` from a typed `eval[T](...)` `fun` tree. The

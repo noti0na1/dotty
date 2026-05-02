@@ -361,12 +361,14 @@ class ReplPhase extends Phase:
     val objectTermName = objectName.toTermName
     ReplCompiler.objectNames.update(defs.state.objectIndex, objectTermName)
 
-    // Import the runtime `eval` sentinel so the bare name resolves in
-    // user code. CollectTopLevelImports filters this back out so it
-    // doesn't pollute `:imports`.
+    // Import the runtime `eval`/`evalSafe` sentinels so the bare names
+    // resolve in user code. CollectTopLevelImports filters these back
+    // out so they don't pollute `:imports`.
     val evalImport = Import(
       ReplCompiler.selectFqn("dotty.tools.repl.Eval", span),
-      ImportSelector(Ident("eval".toTermName)) :: Nil
+      ImportSelector(Ident("eval".toTermName))
+        :: ImportSelector(Ident("evalSafe".toTermName))
+        :: Nil
     ).withSpan(span)
 
     val tmpl = Template(emptyConstructor, Nil, Nil, EmptyValDef, evalImport :: defs.stats)

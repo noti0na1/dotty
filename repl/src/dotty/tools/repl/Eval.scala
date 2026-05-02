@@ -115,6 +115,28 @@ object Eval:
   def bindGiven(name: String, value: Any, sourceType: String): Binding =
     new Binding(name, value, isVar = false, isGiven = true, sourceType)
 
+  /** Compile-failure descriptor produced by the verify / wrapper
+   *  compile and carried back through the `Adapter` boundary.
+   *  Surfaced to users as the failure side of [[EvalResult]] (and as
+   *  the data behind [[EvalCompileException]] for the throwing
+   *  `eval[T]` form).
+   *
+   *  Why a value type instead of just throwing the exception: making
+   *  the failure a value lets `evalSafe` distinguish *its own* compile
+   *  error (a `Left(CompileFailure)` from the adapter) from *a
+   *  nested eval inside the body throwing at runtime* (a Java
+   *  exception that propagates through). Without that split,
+   *  `try { ... } catch case e: EvalCompileException => failure(e)`
+   *  inside `evalSafe` would silently swallow nested-eval failures.
+   *
+   *  Lives in `dotty.tools.repl` so the eval-output classloader
+   *  shares the `Class` with the REPL infra (see EVAL.md
+   *  "Classloader bridging").
+   */
+  final class CompileFailure(val errors: Array[String], val source: String):
+    override def toString: String =
+      s"CompileFailure(${errors.length} error(s))"
+
   /** Adapter installed by the running REPL driver. The `expectedType`
    *  argument is the source-level rendering of the type argument the
    *  caller wrote at the `eval[T](...)` call site. The empty string
@@ -131,9 +153,21 @@ object Eval:
    *  path can't see (e.g. a body capturing an `IO^` parameter inside
    *  a `T -> U` lambda) are caught. Empty when the rewriter couldn't
    *  compute a slice; the runtime then skips verification.
+   *
+   *  Returns either the body's value (`Right`) or a [[CompileFailure]]
+   *  (`Left`) describing this call's own compile error. Body runtime
+   *  exceptions (including a nested eval throwing
+   *  [[EvalCompileException]]) propagate through as Java exceptions
+   *  rather than being captured here, so callers can distinguish
+   *  them from this call's compile state.
    */
   trait Adapter:
-    def evalCode(code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): Any
+    def evalCode(
+        code: String,
+        bindings: Array[Binding],
+        expectedType: String,
+        enclosingSource: String
+    ): Either[CompileFailure, Any]
 
   private val active = new ThreadLocal[Adapter]
 
@@ -143,45 +177,121 @@ object Eval:
     try thunk
     finally if prev == null then active.remove() else active.set(prev)
 
-  /** Compile and run `code` against the current REPL session. */
-  def eval[T](code: String): T =
-    evalImpl[T](code, Array.empty[Binding], "", "")
-
-  /** Like `eval(code)` but with explicit bindings. The REPL parser-stage
-   *  rewriter dispatches to this overload when there are lambda-local
-   *  names to capture.
-   */
-  def eval[T](code: String, bindings: Array[Binding]): T =
-    evalImpl[T](code, bindings, "", "")
-
-  /** Like `eval(code, bindings)` but also pins the body's expected
-   *  return type so the eval driver type-checks the body against `T`
-   *  rather than `Any`. The post-typer phase `EvalTypeAnnotate` fills
-   *  in the type string from the typed `TypeApply`'s argument.
+  /** Compile and run `code` against the current REPL session.
    *
-   *  When `expectedType` is empty the wrapper's return type defaults
-   *  to `Any` and the cast at the call site is the only check.
+   *  Two forms differ by the first argument:
+   *
+   *    - `eval(code: String, ...)`: the body is the literal/computed
+   *      `code` string.
+   *    - `eval(gen: EvalContext => String, ...)`: an agent/LLM-style
+   *      generator that receives the call-site context (enclosing
+   *      source, placeholder marker, captured bindings) and returns
+   *      the body string. Scala 3 SAM conversion accepts a function
+   *      literal here even though the parameter is
+   *      `java.util.function.Function` (JDK type so the API surface
+   *      crosses the eval / REPL classloader boundary cleanly — see
+   *      EVAL.md "Classloader bridging"; `scala.Function1` would trip
+   *      the JVM's loader-constraint check with `LinkageError`).
+   *
+   *  Defaulted parameters are normally filled in by the parser-stage
+   *  rewriter from the call site:
+   *
+   *    - `bindings`: every term-level name (lambda parameter,
+   *      block-local val/var/def/given, method parameter) syntactically
+   *      in scope at the call site.
+   *    - `expectedType`: the source-level rendering of `T` from the
+   *      explicit `eval[T](...)` type argument; empty when not
+   *      writable.
+   *    - `enclosingSource`: the source of the enclosing top-level
+   *      statement with this call's location replaced by
+   *      `EvalContext.placeholder`. The runtime splices the body in
+   *      and runs a capture-checking verification compile under the
+   *      original lexical context, catching CC violations the
+   *      wrapper compile can't see.
+   *
+   *  Direct callers (no rewriter) can leave them at their defaults.
    */
-  def eval[T](code: String, bindings: Array[Binding], expectedType: String): T =
-    evalImpl[T](code, bindings, expectedType, "")
-
-  /** Like the 3-arg form but also receives the source of the enclosing
-   *  top-level statement at the call site (with a placeholder for this
-   *  eval call's location). The runtime splices the body in and runs a
-   *  capture-checking verification compile against the original lexical
-   *  context, catching violations the wrapper compile can't see. The
-   *  parser-stage rewriter dispatches to this overload.
-   */
-  def eval[T](code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): T =
+  def eval[T](
+      code: String,
+      bindings: Array[Binding] = Array.empty[Binding],
+      expectedType: String = "",
+      enclosingSource: String = ""
+  ): T =
     evalImpl[T](code, bindings, expectedType, enclosingSource)
 
+  // Closure form: convenience 1-arg overload + the full 4-arg the
+  // rewriter emits. We can't put defaults on these because Scala
+  // forbids defaults on more than one overload of the same name —
+  // the string form already owns them.
+
+  def eval[T](gen: java.util.function.Function[EvalContext, String]): T =
+    eval[T](gen, Array.empty[Binding], "", "")
+
+  def eval[T](
+      gen: java.util.function.Function[EvalContext, String],
+      bindings: Array[Binding],
+      expectedType: String,
+      enclosingSource: String
+  ): T =
+    val ctx = new EvalContext(enclosingSource, bindings)
+    evalImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource)
+
+  /** Non-throwing variant of [[eval]]. Returns [[EvalResult]] with
+   *  the body's value on success or the [[EvalCompileException]] on a
+   *  compile-time failure. Runtime exceptions thrown by the body
+   *  itself still propagate (they aren't compile failures). Designed
+   *  so an agent can feed `result.error.errors` back into a generator
+   *  and retry without wrapping every call in `try`/`catch`.
+   *
+   *  Same two forms (string body, closure body) and same defaulted
+   *  parameters as [[eval]].
+   */
+  def evalSafe[T](
+      code: String,
+      bindings: Array[Binding] = Array.empty[Binding],
+      expectedType: String = "",
+      enclosingSource: String = ""
+  ): EvalResult[T] =
+    evalSafeImpl[T](code, bindings, expectedType, enclosingSource)
+
+  def evalSafe[T](gen: java.util.function.Function[EvalContext, String]): EvalResult[T] =
+    evalSafe[T](gen, Array.empty[Binding], "", "")
+
+  def evalSafe[T](
+      gen: java.util.function.Function[EvalContext, String],
+      bindings: Array[Binding],
+      expectedType: String,
+      enclosingSource: String
+  ): EvalResult[T] =
+    val ctx = new EvalContext(enclosingSource, bindings)
+    evalSafeImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource)
+
   private def evalImpl[T](code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): T =
+    evalSafeImpl[T](code, bindings, expectedType, enclosingSource).get
+
+  private def evalSafeImpl[T](
+      code: String,
+      bindings: Array[Binding],
+      expectedType: String,
+      enclosingSource: String
+  ): EvalResult[T] =
+    // Note: we do NOT catch `EvalCompileException` here. Body
+    // runtime exceptions — which include a *nested* eval's
+    // compile-time failure surfacing as `EvalCompileException` —
+    // propagate to the caller. Only this call's own compile error
+    // (delivered as `Left(CompileFailure)` from the adapter) becomes
+    // an `EvalResult.failure`.
+    activeAdapter().evalCode(code, bindings, expectedType, enclosingSource) match
+      case Right(v) => EvalResult.success(v.asInstanceOf[T])
+      case Left(f) => EvalResult.failure(f)
+
+  private def activeAdapter(): Adapter =
     val a = active.get
     if a == null then
       throw new IllegalStateException(
         "eval(...) requires an active dotty REPL session"
       )
-    a.evalCode(code, bindings, expectedType, enclosingSource).asInstanceOf[T]
+    a
 
   /** Compile `code` against `classLoader`'s classpath using a fresh,
    *  standalone Driver, with each `Binding` exposed as a method parameter
@@ -203,7 +313,7 @@ object Eval:
       compilerSettings: Array[String],
       expectedType: String,
       enclosingSource: String = ""
-  ): Any =
+  ): Either[CompileFailure, Any] =
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
 
@@ -224,10 +334,14 @@ object Eval:
     //     statement and can surface unrelated errors (e.g. when the
     //     surrounding code uses session-level imports the verify
     //     compile doesn't replay).
-    // Compile errors from this pass surface as `EvalCompileException`
-    // exactly like wrapper-compile errors.
+    // A failed verification short-circuits the wrapper compile and
+    // returns a `Left(CompileFailure)`; the throwing `eval` form
+    // converts that to an exception, the non-throwing `evalSafe`
+    // form wraps it in `EvalResult.failure`.
     if enclosingSource.nonEmpty && captureCheckingEnabled(compilerSettings) then
-      verifyEnclosing(code, enclosingSource, classLoader, replOutDir, replWrapperImports, compilerSettings)
+      verifyEnclosing(code, enclosingSource, classLoader, replOutDir, replWrapperImports, compilerSettings) match
+        case Some(f) => return Left(f)
+        case None =>
 
     // Pre-compute the source-level type name for each binding once.
     // Prefer the typer-supplied `sourceType` (filled in by the
@@ -331,7 +445,7 @@ object Eval:
 
     compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
       case Left(errs) =>
-        throw new EvalCompileException(errs.toArray, source)
+        return Left(new CompileFailure(errs.toArray, source))
       case Right(()) =>
 
     // Use a custom classloader for the eval-compiled wrapper that
@@ -354,7 +468,12 @@ object Eval:
     val args =
       (plainBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])
         ++ givenBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])).toArray
-    try method.invoke(module, args*)
+    // Body runtime exceptions (including a *nested* eval throwing
+    // `EvalCompileException`) propagate out of `evalIsolated` as Java
+    // exceptions so callers can distinguish them from this call's own
+    // compile failure. Only the wrapper-compile and verify-compile
+    // produce `Left(CompileFailure)`.
+    try Right(method.invoke(module, args*))
     catch case e: java.lang.reflect.InvocationTargetException =>
       // Preserve the user-visible cause; reflection wraps it in an ITE
       // whose `getCause` is normally non-null, but we guard against the
@@ -377,9 +496,10 @@ object Eval:
   /** Splice `code` into the placeholder embedded in `enclosingSource`
    *  (the source of the enclosing top-level statement at the eval call
    *  site) and run a verification compile under the original lexical
-   *  context. Throws `EvalCompileException` on compile errors so the
-   *  user sees a CC violation as a structured failure, not a silent
-   *  wrapper-compile success.
+   *  context. Returns `Some(CompileFailure)` on compile errors and
+   *  `None` on success. The caller (`evalIsolated`) propagates the
+   *  failure up as `Left` so the throwing/non-throwing eval forms can
+   *  decide what to do with it.
    *
    *  We wrap the spliced source in a synthetic object so the result is
    *  a valid compilation unit. Imports of REPL-session symbols are
@@ -395,7 +515,7 @@ object Eval:
       replOutDir: AbstractFile,
       replWrapperImports: Array[String],
       compilerSettings: Array[String]
-  ): Unit =
+  ): Option[CompileFailure] =
     val splicedBody = enclosingSource.replace(EvalBodyPlaceholder.Marker, EvalBodyPlaceholder.emit(code))
     val verifyName = s"__EvalVerify_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
     val evalImport = "import dotty.tools.repl.Eval.eval\n"
@@ -410,8 +530,9 @@ object Eval:
     val outDir = new VirtualDirectory("<eval-verify>")
     compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
       case Left(errs) =>
-        throw new EvalCompileException(errs.toArray, source)
+        Some(new CompileFailure(errs.toArray, source))
       case Right(()) =>
+        None
   end verifyEnclosing
 
   /** Best-effort conversion from a runtime `Class` to a Scala source-level

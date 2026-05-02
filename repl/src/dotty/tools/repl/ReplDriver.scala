@@ -286,7 +286,12 @@ class ReplDriver(settings: Array[String],
    *  code this driver runs. Forwards to `evalDynamic`.
    */
   private val evalAdapter: Eval.Adapter = new Eval.Adapter {
-    def evalCode(code: String, bindings: Array[Eval.Binding], expectedType: String, enclosingSource: String): Any =
+    def evalCode(
+        code: String,
+        bindings: Array[Eval.Binding],
+        expectedType: String,
+        enclosingSource: String
+    ): Either[Eval.CompileFailure, Any] =
       evalDynamic(code, bindings, expectedType, enclosingSource)
   }
 
@@ -301,7 +306,12 @@ class ReplDriver(settings: Array[String],
    *  `-explain`, etc.) so language features enabled at the REPL prompt
    *  (e.g. `experimental.captureChecking`) apply inside eval bodies too.
    */
-  private def evalDynamic(code: String, bindings: Array[Eval.Binding], expectedType: String, enclosingSource: String): Any =
+  private def evalDynamic(
+      code: String,
+      bindings: Array[Eval.Binding],
+      expectedType: String,
+      enclosingSource: String
+  ): Either[Eval.CompileFailure, Any] =
     val state = currentState
     if state == null then
       throw new IllegalStateException("Eval.eval has no current REPL state")

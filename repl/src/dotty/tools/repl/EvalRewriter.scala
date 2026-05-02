@@ -10,16 +10,17 @@ import dotc.core.Decorators.*
 import dotc.core.Flags
 import dotc.util.Spans.Span
 
-/** Sentinel string the parser-stage rewriter substitutes into the
- *  enclosing-source text where each `eval(...)` call sits. The runtime
- *  verification pass swaps it back out for the (now known) eval body
- *  string before re-typechecking the original lexical context.
+/** Helpers for the placeholder string the parser-stage rewriter
+ *  substitutes into the enclosing-source text where each `eval(...)`
+ *  call sits. The marker itself lives on `EvalContext.placeholder`
+ *  (publicly, so user-side closures can reference it).
  *
- *  Wrapped in parentheses so it splices into any expression position
- *  the eval call could appear in.
+ *  `emit` wraps the body in parentheses so the splice produces a
+ *  syntactically valid expression in any position the eval call could
+ *  have appeared in.
  */
 private[repl] object EvalBodyPlaceholder:
-  val Marker: String = "__evalBodyPlaceholder_d3edfb9d__"
+  inline def Marker: String = EvalContext.placeholder
   def emit(body: String): String = s"({ $body })"
 
 /** Parse-stage rewriter that augments each `eval(...)` call with
@@ -511,11 +512,14 @@ object EvalRewriter:
         case TopKind.Unknown => ""
 
     private def isEvalCall(fn: Tree): Boolean = fn match
-      case Ident(n) => n.toString == "eval"
-      case Select(qual, n) => n.toString == "eval" && isEvalQualifier(qual)
+      case Ident(n) => isEvalName(n.toString)
+      case Select(qual, n) => isEvalName(n.toString) && isEvalQualifier(qual)
       // `eval[T](...)` desugars to `Apply(TypeApply(Ident("eval"), ...), ...)`.
       case TypeApply(inner, _) => isEvalCall(inner)
       case _ => false
+
+    private def isEvalName(name: String): Boolean =
+      name == "eval" || name == "evalSafe"
 
     private def isEvalQualifier(t: Tree): Boolean = t match
       case Ident(n) => n.toString == "Eval"

@@ -1112,3 +1112,217 @@ class DynamicEvalCaptureCheckingTests extends ReplTest(
       )
     }
 end DynamicEvalCaptureCheckingTests
+
+/** Tests for the agent / LLM workflow APIs:
+ *
+ *    - Closure form `eval(gen: EvalContext => String)`: lets a
+ *      generator inspect the enclosing source, the placeholder
+ *      marker, and the captured bindings before producing the body.
+ *    - Non-throwing `evalSafe[T]: EvalResult[T]`: lets the caller
+ *      branch on `isSuccess` / `isFailure` and feed
+ *      `error.errors` back into the generator instead of catching.
+ */
+class DynamicEvalAgentApiTests extends ReplTest:
+
+  @Test def closureFormSeesEnclosingSourceAndPlaceholder =
+    initially {
+      run(
+        """|import dotty.tools.repl.EvalContext
+           |val r: Int = eval { (ctx: EvalContext) =>
+           |  // The agent would inspect ctx.enclosingSource (and
+           |  // ctx.placeholder for where to splice) to compose its
+           |  // prompt. Here we just assert the marker is present.
+           |  assert(ctx.enclosingSource.contains(ctx.placeholder),
+           |    s"placeholder ${ctx.placeholder} missing from ${ctx.enclosingSource}")
+           |  "100 + 23"
+           |}
+           |println(s"r=$r")""".stripMargin
+      )
+      assertContains("r=123", storedOutput())
+    }
+
+  @Test def closureFormSeesBindingNames =
+    initially {
+      run(
+        """|import dotty.tools.repl.EvalContext
+           |def add(x: Int, y: Int): Int =
+           |  eval { (ctx: EvalContext) =>
+           |    // The generator can see the in-scope names.
+           |    assert(ctx.bindings.map(_.name).toSet == Set("x", "y"),
+           |      s"got ${ctx.bindings.map(_.name).toList}")
+           |    "x + y"
+           |  }
+           |println(s"add(7, 35)=${add(7, 35)}")""".stripMargin
+      )
+      assertContains("add(7, 35)=42", storedOutput())
+    }
+
+  @Test def closureFormCaptureCheckingStillFires =
+    // Body comes from the generator at runtime, but the rewriter still
+    // captures the enclosing-source slice — so the verification pass
+    // catches CC violations exactly the same way as the literal-string
+    // form. This test runs *without* the captureChecking flag, so we
+    // just check the body composes correctly.
+    initially {
+      run(
+        """|import dotty.tools.repl.EvalContext
+           |def greet(name: String): String =
+           |  eval[String] { (ctx: EvalContext) =>
+           |    s"\"hello, \" + name"
+           |  }
+           |println(greet("world"))""".stripMargin
+      )
+      assertContains("hello, world", storedOutput())
+    }
+
+  @Test def evalSafeReturnsValueOnSuccess =
+    initially {
+      run(
+        """|import dotty.tools.repl.EvalResult
+           |val r: EvalResult[Int] = evalSafe[Int]("1 + 41")
+           |println(s"isSuccess=${r.isSuccess}, get=${r.get}")""".stripMargin
+      )
+      assertContains("isSuccess=true, get=42", storedOutput())
+    }
+
+  @Test def evalSafeReturnsErrorOnCompileFailure =
+    initially {
+      run(
+        """|import dotty.tools.repl.{Eval, EvalResult}
+           |val r: EvalResult[Int] = evalSafe[Int]("nonExistentSym + 1")
+           |val e: Eval.CompileFailure | Null = r.error
+           |println(s"isFailure=${r.isFailure}, errors=${e.nn.errors.length}")
+           |println(s"first=${e.nn.errors(0).split('\n').head}")""".stripMargin
+      )
+      val out = storedOutput()
+      assertContains("isFailure=true, errors=1", out)
+      assertContains("Not found: nonExistentSym", out)
+    }
+
+  @Test def evalSafeAgentRetryLoop =
+    // The motivating use case: an agent generates code, the eval
+    // fails to compile, the agent inspects the error and generates
+    // again. Modeled here with two attempts, the first deliberately
+    // bad and the second corrected.
+    initially {
+      run(
+        """|import dotty.tools.repl.{EvalContext, EvalResult}
+           |var attempt: Int = 0
+           |val r: EvalResult[Int] = evalSafe[Int] { (ctx: EvalContext) =>
+           |  attempt += 1
+           |  if attempt == 1 then "definitelyNotDefined + 1"
+           |  else "21 * 2"
+           |}
+           |val r2: EvalResult[Int] =
+           |  if r.isSuccess then r
+           |  else
+           |    // "agent" retries, having seen the error.
+           |    val errMsg = r.error.nn.errors.mkString("|")
+           |    println(s"retrying after: ${errMsg.split('\n').head}")
+           |    evalSafe[Int] { (ctx: EvalContext) =>
+           |      // For this test the closure ignores the error and
+           |      // produces a known-good body.
+           |      "21 * 2"
+           |    }
+           |println(s"final=${r2.get}")""".stripMargin
+      )
+      val out = storedOutput()
+      assertContains("retrying after:", out)
+      assertContains("final=42", out)
+    }
+
+  @Test def evalSafeClosureFormSeesContext =
+    initially {
+      run(
+        """|import dotty.tools.repl.{EvalContext, EvalResult}
+           |def f(x: Int): EvalResult[Int] =
+           |  evalSafe[Int] { (ctx: EvalContext) =>
+           |    // The generator decides what to splice based on the
+           |    // captured bindings.
+           |    assert(ctx.bindings.map(_.name).toSet == Set("x"),
+           |      s"expected [x], got ${ctx.bindings.map(_.name).toList}")
+           |    assert(ctx.enclosingSource.nonEmpty,
+           |      "expected non-empty enclosing source for a def-bound eval")
+           |    "x * x"
+           |  }
+           |val r = f(7)
+           |println(s"f(7)=${r.get}")""".stripMargin
+      )
+      assertContains("f(7)=49", storedOutput())
+    }
+
+  @Test def evalSafeDoesNotCaptureNestedCompileFailure =
+    // The outer call is evalSafe; the body contains a *nested* eval
+    // (not evalSafe) that fails to compile. The nested compile
+    // failure surfaces as a thrown EvalCompileException at runtime
+    // — that's the body's runtime exception, not the outer's compile
+    // state. evalSafe must propagate it, not wrap it as
+    // `EvalResult.failure` (which would tell the agent "your outer
+    // code didn't compile" when in fact the outer did and the body
+    // crashed).
+    initially {
+      run(
+        """|import dotty.tools.repl.{EvalResult, EvalCompileException}
+           |val outcome: String =
+           |  try
+           |    val r = evalSafe[Int]("eval[Int](\"undefinedSym + 1\")")
+           |    if r.isFailure then "WRONG: outer evalSafe captured nested failure"
+           |    else "WRONG: produced a value"
+           |  catch case _: EvalCompileException =>
+           |    "OK: nested failure propagated through outer evalSafe"
+           |println(outcome)""".stripMargin
+      )
+      assertContains("OK: nested failure propagated", storedOutput())
+    }
+
+  @Test def evalSafeCapturesOwnCompileFailure =
+    // Sanity check on the other side: a real outer-compile error
+    // (here, a body that references an undefined symbol with no
+    // nesting involved) IS captured by evalSafe, since it is the
+    // outer call's own compile state.
+    initially {
+      run(
+        """|import dotty.tools.repl.EvalResult
+           |val r: EvalResult[Int] = evalSafe[Int]("undefinedTopLevel + 1")
+           |println(s"isFailure=${r.isFailure}, count=${r.error.nn.errors.length}")""".stripMargin
+      )
+      assertContains("isFailure=true, count=1", storedOutput())
+    }
+
+  @Test def closureFormInNestedEvalSeesChainedContext =
+    // Inside an outer eval's body, a nested eval can also use the
+    // closure form. The runtime nested-eval rewriter (rewriteCode in
+    // Eval.scala) composes the inner enclosingSource so it includes
+    // the outer's enclosing-source plus the outer body wrapper. The
+    // inner closure should see the full chain (containing the outer
+    // def signature and the outer `({ ... })` wrapper) plus all the
+    // bindings the outer captured. The test avoids `s"..."`
+    // interpolation inside the inner body string because the
+    // rewriter's pretty-printer does not always round-trip those
+    // (see EVAL.md "Pretty-printer round-trip in nested eval").
+    initially {
+      val q3 = "\"\"\""
+      val innerBody =
+        s"""${q3}eval[Int] { (innerCtx: dotty.tools.repl.EvalContext) =>
+           |      assert(innerCtx.bindings.map(_.name).toSet == Set("i"))
+           |      assert(innerCtx.enclosingSource.contains("def f(i: Int)"),
+           |        "inner should also see the def signature (chained from outer)")
+           |      assert(innerCtx.enclosingSource.contains("({ "),
+           |        "inner enclosing should include the outer-body wrapper braces")
+           |      "i + 1"
+           |    }${q3}""".stripMargin
+      run(
+        s"""|import dotty.tools.repl.EvalContext
+            |def f(i: Int): Int =
+            |  eval[Int] { (outerCtx: EvalContext) =>
+            |    assert(outerCtx.bindings.map(_.name).toSet == Set("i"))
+            |    assert(outerCtx.enclosingSource.contains("def f(i: Int)"),
+            |      "outer should see the def signature")
+            |    $innerBody
+            |  }
+            |println("f(10) = " + f(10))""".stripMargin
+      )
+      assertContains("f(10) = 11", storedOutput())
+    }
+
+end DynamicEvalAgentApiTests
