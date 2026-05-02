@@ -53,7 +53,35 @@ class EvalTypeAnnotate extends Phase:
     if annotated ne tree then ctx.compilationUnit.tpdTree = annotated
 
   private class BindAnnotator extends TreeMap:
+    /** Type-parameter names the rewriter said are in scope at the
+     *  current eval call site (extracted from the 5th literal arg).
+     *  When non-empty, `renderType` allows these names through even
+     *  though they're typer-level type-params, because the runtime
+     *  copies them onto the wrapper's `def __run__[...]` signature.
+     */
+    private var allowedTypeParams: Set[String] = Set.empty
+
+    /** The innermost enclosing DefDef while we descend. Used to
+     *  validate that an "allowed" type-param symbol is *actually*
+     *  owned by the wrapper-anchor DefDef and not shadowed by an
+     *  inner one with the same name. Without this check, a body that
+     *  captures a binding whose type involves an outer `T` would
+     *  silently get the inner DefDef's `T` in the wrapper signature
+     *  (different symbol, same name): still erases compatibly, but
+     *  semantically wrong.
+     */
+    private val defDefStack = scala.collection.mutable.Stack.empty[Symbol]
+
     override def transform(tree: Tree)(using Context): Tree =
+      // DefDef entry: track the symbol so type-param-owner checks
+      // can distinguish e.g. f's T from g's T when nested DefDefs
+      // shadow the same name.
+      tree match
+        case dd: DefDef =>
+          defDefStack.push(dd.symbol)
+          try return super.transform(dd) finally defDefStack.pop()
+        case _ =>
+
       // Handle the binding-side calls first (Eval.bind/bindVar/bindGiven),
       // then the eval call itself. We need both because the eval call
       // wraps the bind calls inside its `Array(...)` argument; we want
@@ -68,7 +96,8 @@ class EvalTypeAnnotate extends Phase:
           // when synthesising the wrapper signature, so we want the
           // inner `T`, not the cell type itself.
           val tpe = if isVar then EvalTypeAnnotate.unwrapCellType(value.tpe) else value.tpe
-          val tpeStr = EvalTypeAnnotate.renderType(tpe)
+          val anchor = defDefStack.headOption.getOrElse(NoSymbol)
+          val tpeStr = EvalTypeAnnotate.renderType(tpe, allowedTypeParams, anchor)
           if tpeStr.isEmpty then app
           else
             val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
@@ -76,23 +105,72 @@ class EvalTypeAnnotate extends Phase:
 
         case app @ Apply(fun, code :: bindings :: (sentinel @ Literal(Constant(""))) :: rest)
             if isEvalCall(fun) =>
-          // Render the `T` from the surrounding `eval[T](...)` typed
-          // TypeApply so the eval body's wrapper compiles with `T` as
-          // its return type. Falls back to the empty sentinel (and the
-          // call-site cast) when `T` mentions a locally-scoped symbol.
-          // The 4-arg form additionally carries the enclosing-source
-          // string for the verification pass; we preserve `rest` (the
-          // tail past the expectedType sentinel) untouched.
-          val tArg = extractTypeArg(fun)
-          val tpeStr = if tArg eq null then "" else EvalTypeAnnotate.renderType(tArg)
-          if tpeStr.isEmpty then app
-          else
-            val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
-            cpy.Apply(app)(fun, code :: bindings :: tpeLit :: rest)
+          // The rewriter's 5-arg form is
+          //   eval[T](code, bindings, "", enclosingSource, enclosingTypeParams)
+          // We extract `enclosingTypeParams` (the last literal) so any
+          // bind calls *inside* `bindings` can let type-param mentions
+          // through when they refer to the wrapper's own type-param
+          // clause. We process children with that scope active, then
+          // fill the expectedType sentinel from the typed `[T]`.
+          val tpsAllow = extractTypeParamNames(rest)
+          val previous = allowedTypeParams
+          allowedTypeParams = tpsAllow
+          val rebuilt = try
+            // The rewriter places bind calls inside `bindings`, so we
+            // descend into `app` with the type-param scope active.
+            // Rendering the eval call's `T` happens *after* this so
+            // it also benefits from the allow-list.
+            val withChildren = super.transform(app).asInstanceOf[Apply]
+            val tArg = extractTypeArg(withChildren.fun)
+            val anchor = defDefStack.headOption.getOrElse(NoSymbol)
+            val tpeStr =
+              if tArg eq null then ""
+              else EvalTypeAnnotate.renderType(tArg, allowedTypeParams, anchor)
+            withChildren.args match
+              case c :: b :: (s @ Literal(Constant(""))) :: r if tpeStr.nonEmpty =>
+                val tpeLit = Literal(Constant(tpeStr)).withSpan(s.span)
+                cpy.Apply(withChildren)(withChildren.fun, c :: b :: tpeLit :: r)
+              case _ => withChildren
+          finally allowedTypeParams = previous
+          // We've already recursed into children; return rebuilt as-is.
+          return rebuilt
 
         case _ => tree
 
       super.transform(annotated)
+
+    /** Find the trailing String literal (the rewriter's
+     *  `enclosingTypeParams` arg) and parse out the type-param names.
+     *  Returns the empty set when the tail isn't a literal we recognise.
+     */
+    private def extractTypeParamNames(rest: List[Tree]): Set[String] =
+      rest.lastOption match
+        case Some(Literal(Constant(s: String))) if s.nonEmpty => parseTypeParamNames(s)
+        case _ => Set.empty
+
+    private def parseTypeParamNames(clause: String): Set[String] =
+      val trimmed = clause.trim
+      if !(trimmed.startsWith("[") && trimmed.endsWith("]")) then return Set.empty
+      val inner = trimmed.substring(1, trimmed.length - 1)
+      // Each entry looks like `T`, `T <: Bound`, `T >: Lo <: Hi`, etc.
+      // We only want the leading identifier.
+      val out = scala.collection.mutable.Set.empty[String]
+      var depth = 0
+      val sb = new StringBuilder
+      def commit(): Unit =
+        val piece = sb.toString.trim
+        sb.clear()
+        if piece.nonEmpty then
+          val name = piece.takeWhile(c => c.isLetterOrDigit || c == '_' || c == '$')
+          if name.nonEmpty then out += name
+      for c <- inner do
+        if c == ',' && depth == 0 then commit()
+        else
+          if c == '[' || c == '(' || c == '{' then depth += 1
+          else if c == ']' || c == ')' || c == '}' then depth -= 1
+          sb += c
+      commit()
+      out.toSet
 
     private def isEvalBindCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
@@ -173,12 +251,31 @@ object EvalTypeAnnotate:
    *  untracked.
    */
   private[repl] def renderType(tpe: Type)(using Context): String =
+    renderType(tpe, Set.empty, NoSymbol)
+
+  /** Like the no-arg overload but also allows references to the
+   *  type-parameter names in `allowedTypeParams` (typically the type
+   *  parameters of the enclosing DefDef of the eval call site, which
+   *  the runtime copies onto the wrapper's `__run__` signature) —
+   *  but *only* when those type-param symbols are actually owned by
+   *  `anchor` (the innermost enclosing DefDef of the eval call). A
+   *  same-named outer-DefDef type param shadowed by an inner one
+   *  resolves to the outer's symbol; without the anchor check we'd
+   *  silently substitute the inner's `T` for it in the wrapper's
+   *  signature, which is a soundness leak.
+   */
+  private[repl] def renderType(
+      tpe: Type,
+      allowedTypeParams: Set[String],
+      anchor: Symbol
+  )(using Context): String =
     if tpe == null || !tpe.exists || tpe.isError then return ""
     val widened = tpe.widen
     if !widened.exists || widened.isError then return ""
     if isUselessType(widened) then return ""
-    if mentionsLocallyScopedSymbol(widened) then return ""
-    val cleaned = stripCaptureAnnotations(widened)
+    val resolved = dealiasLocalAliases(widened)
+    if mentionsLocallyScopedSymbol(resolved, allowedTypeParams, anchor) then return ""
+    val cleaned = stripCaptureAnnotations(resolved)
     // Disable colours so the rendered string never contains ANSI
     // escapes that would later confuse the eval driver's parser.
     val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
@@ -237,13 +334,52 @@ object EvalTypeAnnotate:
    *  is a *term*". REPL session symbols are owned by the wrapper
    *  module class, which is not a term, so they pass.
    */
-  private def mentionsLocallyScopedSymbol(tpe: Type)(using Context): Boolean =
+  private def mentionsLocallyScopedSymbol(
+      tpe: Type,
+      allowedTypeParams: Set[String],
+      anchor: Symbol
+  )(using Context): Boolean =
     import dotc.core.Flags
     tpe.existsPart { part =>
       val sym = part.typeSymbol
-      sym.exists
-        && (sym.is(Flags.TypeParam)
-            || (sym.maybeOwner.exists && sym.maybeOwner.isTerm))
+      sym.exists && {
+        val isTypeParam = sym.is(Flags.TypeParam)
+        val isTermOwned = sym.maybeOwner.exists && sym.maybeOwner.isTerm
+        // A type-param mention is allowed only when:
+        //   - the rewriter said its name is in scope at the eval call
+        //     (i.e. it's part of the wrapper's `def __run__[...]`
+        //     signature), AND
+        //   - the *symbol* is owned by the innermost enclosing DefDef
+        //     (the wrapper anchor). Without the second clause, an
+        //     outer DefDef's `T` shadowed by an inner DefDef's `T`
+        //     would slip through using the inner's name; semantically
+        //     they're different types.
+        val nameAllowed =
+          allowedTypeParams.nonEmpty && allowedTypeParams.contains(sym.name.toString)
+        val ownerOk =
+          anchor.exists && sym.maybeOwner.exists && sym.maybeOwner == anchor
+        val allowed = (isTypeParam || isTermOwned) && nameAllowed && ownerOk
+        (isTypeParam || isTermOwned) && !allowed
+      }
     }
+
+  /** Dealias type aliases whose symbol is term-owned (i.e. defined
+   *  inside a method scope). Session-level aliases live on a module
+   *  class and stay aliased — those are nameable in the wrapper via
+   *  the imports the runtime injects. Term-owned aliases would not
+   *  resolve in the wrapper, so we expand them to the underlying type.
+   */
+  private def dealiasLocalAliases(tpe: Type)(using Context): Type =
+    import dotc.core.Types.{TypeMap, TypeRef}
+    val mapper = new TypeMap:
+      def apply(tp: Type): Type = tp match
+        case ref: TypeRef =>
+          val sym = ref.symbol
+          if sym.exists && sym.isAliasType && sym.maybeOwner.exists && sym.maybeOwner.isTerm then
+            // Expand the alias and continue mapping into the result.
+            this(ref.dealias)
+          else mapOver(tp)
+        case _ => mapOver(tp)
+    mapper(tpe)
 
 end EvalTypeAnnotate

@@ -166,7 +166,8 @@ object Eval:
         code: String,
         bindings: Array[Binding],
         expectedType: String,
-        enclosingSource: String
+        enclosingSource: String,
+        enclosingTypeParams: String
     ): Either[CompileFailure, Any]
 
   private val active = new ThreadLocal[Adapter]
@@ -215,26 +216,28 @@ object Eval:
       code: String,
       bindings: Array[Binding] = Array.empty[Binding],
       expectedType: String = "",
-      enclosingSource: String = ""
+      enclosingSource: String = "",
+      enclosingTypeParams: String = ""
   ): T =
-    evalImpl[T](code, bindings, expectedType, enclosingSource)
+    evalImpl[T](code, bindings, expectedType, enclosingSource, enclosingTypeParams)
 
-  // Closure form: convenience 1-arg overload + the full 4-arg the
+  // Closure form: convenience 1-arg overload + the full 5-arg the
   // rewriter emits. We can't put defaults on these because Scala
   // forbids defaults on more than one overload of the same name —
   // the string form already owns them.
 
   def eval[T](gen: java.util.function.Function[EvalContext, String]): T =
-    eval[T](gen, Array.empty[Binding], "", "")
+    eval[T](gen, Array.empty[Binding], "", "", "")
 
   def eval[T](
       gen: java.util.function.Function[EvalContext, String],
       bindings: Array[Binding],
       expectedType: String,
-      enclosingSource: String
+      enclosingSource: String,
+      enclosingTypeParams: String
   ): T =
     val ctx = new EvalContext(enclosingSource, bindings)
-    evalImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource)
+    evalImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource, enclosingTypeParams)
 
   /** Non-throwing variant of [[eval]]. Returns [[EvalResult]] with
    *  the body's value on success or the [[EvalCompileException]] on a
@@ -250,30 +253,39 @@ object Eval:
       code: String,
       bindings: Array[Binding] = Array.empty[Binding],
       expectedType: String = "",
-      enclosingSource: String = ""
+      enclosingSource: String = "",
+      enclosingTypeParams: String = ""
   ): EvalResult[T] =
-    evalSafeImpl[T](code, bindings, expectedType, enclosingSource)
+    evalSafeImpl[T](code, bindings, expectedType, enclosingSource, enclosingTypeParams)
 
   def evalSafe[T](gen: java.util.function.Function[EvalContext, String]): EvalResult[T] =
-    evalSafe[T](gen, Array.empty[Binding], "", "")
+    evalSafe[T](gen, Array.empty[Binding], "", "", "")
 
   def evalSafe[T](
       gen: java.util.function.Function[EvalContext, String],
       bindings: Array[Binding],
       expectedType: String,
-      enclosingSource: String
+      enclosingSource: String,
+      enclosingTypeParams: String
   ): EvalResult[T] =
     val ctx = new EvalContext(enclosingSource, bindings)
-    evalSafeImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource)
+    evalSafeImpl[T](gen.apply(ctx), bindings, expectedType, enclosingSource, enclosingTypeParams)
 
-  private def evalImpl[T](code: String, bindings: Array[Binding], expectedType: String, enclosingSource: String): T =
-    evalSafeImpl[T](code, bindings, expectedType, enclosingSource).get
+  private def evalImpl[T](
+      code: String,
+      bindings: Array[Binding],
+      expectedType: String,
+      enclosingSource: String,
+      enclosingTypeParams: String
+  ): T =
+    evalSafeImpl[T](code, bindings, expectedType, enclosingSource, enclosingTypeParams).get
 
   private def evalSafeImpl[T](
       code: String,
       bindings: Array[Binding],
       expectedType: String,
-      enclosingSource: String
+      enclosingSource: String,
+      enclosingTypeParams: String
   ): EvalResult[T] =
     // Note: we do NOT catch `EvalCompileException` here. Body
     // runtime exceptions — which include a *nested* eval's
@@ -281,7 +293,7 @@ object Eval:
     // propagate to the caller. Only this call's own compile error
     // (delivered as `Left(CompileFailure)` from the adapter) becomes
     // an `EvalResult.failure`.
-    activeAdapter().evalCode(code, bindings, expectedType, enclosingSource) match
+    activeAdapter().evalCode(code, bindings, expectedType, enclosingSource, enclosingTypeParams) match
       case Right(v) => EvalResult.success(v.asInstanceOf[T])
       case Left(f) => EvalResult.failure(f)
 
@@ -312,7 +324,8 @@ object Eval:
       replWrapperImports: Array[String],
       compilerSettings: Array[String],
       expectedType: String,
-      enclosingSource: String = ""
+      enclosingSource: String = "",
+      enclosingTypeParams: String = ""
   ): Either[CompileFailure, Any] =
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
@@ -415,7 +428,7 @@ object Eval:
     // This way the inner verification compile reconstructs the full
     // original lexical context — def, outer body, inner body — and
     // capture-checks them as one source.
-    val rewrittenCode = rewriteUserCode(code, bindings, enclosingSource)
+    val rewrittenCode = rewriteUserCode(code, bindings, enclosingSource, enclosingTypeParams)
 
     // Pin the wrapper's return type to the caller's `T` when we have it.
     // The body then type-checks against `T` and a mismatch surfaces as a
@@ -435,9 +448,16 @@ object Eval:
            |$varPostlude
            |  __eval_result__""".stripMargin
 
+    // The rewriter passes the enclosing DefDef's type-param clause
+    // here (e.g. `[T, U <: AnyRef]`) so the wrapper can name those
+    // types in its signature and body. Erasure means `Method.invoke`
+    // doesn't need actual type arguments at runtime; the body just
+    // needs `T`/`U` to be in scope to type-check.
+    val typeParamClause = enclosingTypeParams
+
     val source =
       s"""${importBlock}object $wrapperName {
-         |  def __run__$params: $returnType = {
+         |  def __run__$typeParamClause$params: $returnType = {
          |    $bodyBlock
          |  }
          |}
@@ -634,7 +654,8 @@ object Eval:
   private def rewriteUserCode(
       code: String,
       bindings: Array[Binding],
-      outerEnclosingSource: String
+      outerEnclosingSource: String,
+      outerEnclosingTypeParams: String
   ): String =
     if !mightContainNestedEval(code) then return code
     val ctxBase = new ContextBase
@@ -645,7 +666,9 @@ object Eval:
     val initialScope: Array[(String, Boolean)] =
       bindings.map(b => (b.name, b.isVar))
     try
-      val rewritten = EvalRewriter.rewriteCode(code, initialScope, outerEnclosingSource)(using ctx)
+      val rewritten = EvalRewriter.rewriteCode(
+        code, initialScope, outerEnclosingSource, outerEnclosingTypeParams
+      )(using ctx)
       if isParseable(rewritten)(using ctx) then rewritten else code
     catch case NonFatal(_) =>
       code

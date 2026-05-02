@@ -64,7 +64,8 @@ object EvalRewriter:
   def rewriteCode(
       code: String,
       initialScope: Array[(String, Boolean)],
-      outerEnclosingSource: String = ""
+      outerEnclosingSource: String = "",
+      outerEnclosingTypeParams: String = ""
   )(using Context): String =
     import dotty.tools.dotc.parsing.Parsers.Parser
     import dotty.tools.dotc.util.SourceFile
@@ -76,6 +77,8 @@ object EvalRewriter:
     tx.pushInitialScope(seed)
     if outerEnclosingSource.nonEmpty then
       tx.setNestedContext(code, outerEnclosingSource)
+    if outerEnclosingTypeParams.nonEmpty then
+      tx.pushOuterTypeParams(outerEnclosingTypeParams)
     tx.transform(tree).show
 
   /** A captured local.
@@ -131,6 +134,16 @@ object EvalRewriter:
      *  records the names a single lambda, block, or method introduces.
      */
     private val scopeStack = mutable.Stack.empty[List[CapturedName]]
+
+    /** Stack of in-scope type parameters, innermost on top. Each frame
+     *  is the rendered type-param-clause entries of one enclosing
+     *  `DefDef` (e.g. `List("T", "U <: AnyRef")` for
+     *  `def f[T, U <: AnyRef](...)`). The runtime puts the union of
+     *  the stack into the wrapper's `__run__` signature so the body
+     *  can refer to those type names directly: erasure means we
+     *  don't need any value at runtime, but the body type-checks.
+     */
+    private val typeParamStack = mutable.Stack.empty[List[String]]
 
     /** The currently-active top-level tree (one entry of the REPL line's
      *  parsed `trees` list). Used to compute, for each eval call we
@@ -201,6 +214,41 @@ object EvalRewriter:
     def pushInitialScope(names: List[CapturedName]): Unit =
       if names.nonEmpty then scopeStack.push(names)
 
+    /** Seed the type-param stack with the outer eval's enclosing
+     *  type-param clause (e.g. `"[T, U <: AnyRef]"`). Used by
+     *  `rewriteCode` so a nested eval inherits the outer DefDef's
+     *  type params and can reference them in its own wrapper
+     *  signature. The clause string is parsed back into entries by
+     *  splitting on top-level commas inside the brackets.
+     */
+    def pushOuterTypeParams(clause: String): Unit =
+      val trimmed = clause.trim
+      if trimmed.startsWith("[") && trimmed.endsWith("]") then
+        val inner = trimmed.substring(1, trimmed.length - 1)
+        val entries = splitTopLevel(inner)
+        if entries.nonEmpty then typeParamStack.push(entries)
+
+    /** Split a string on top-level commas, ignoring commas inside
+     *  brackets / parentheses (so `T <: List[Int, String]` stays as
+     *  one entry).
+     */
+    private def splitTopLevel(s: String): List[String] =
+      val out = mutable.ListBuffer.empty[String]
+      val sb = new StringBuilder
+      var depth = 0
+      for c <- s do
+        if (c == ',' || c == ';') && depth == 0 then
+          val piece = sb.toString.trim
+          if piece.nonEmpty then out += piece
+          sb.clear()
+        else
+          if c == '[' || c == '(' || c == '{' then depth += 1
+          else if c == ']' || c == ')' || c == '}' then depth -= 1
+          sb += c
+      val tail = sb.toString.trim
+      if tail.nonEmpty then out += tail
+      out.toList
+
     /** Names visible at the current point, deduplicated with innermost
      *  shadowing outer.
      */
@@ -214,6 +262,44 @@ object EvalRewriter:
       scopeStack.push(names)
       try action
       finally scopeStack.pop()
+
+    private def withTypeParams[T](typeParams: List[String])(action: => T): T =
+      typeParamStack.push(typeParams)
+      try action
+      finally typeParamStack.pop()
+
+    /** Render the current enclosing type-param environment as a
+     *  Scala source-level type-param clause (`"[T, U <: AnyRef]"`),
+     *  or the empty string when there are no type params in scope.
+     *  Outer-method type params come first; if names collide the
+     *  innermost wins (it shadows the outer).
+     */
+    private def currentTypeParamsString: String =
+      val seen = mutable.LinkedHashMap.empty[String, String]
+      // typeParamStack is innermost-first; iterate outer-to-inner so
+      // the innermost wins on shadowing.
+      for level <- typeParamStack.toList.reverse; rendered <- level do
+        val name = rendered.takeWhile(c => c.isLetterOrDigit || c == '_' || c == '$')
+        seen(name) = rendered
+      if seen.isEmpty then ""
+      else seen.values.mkString("[", ", ", "]")
+
+    /** Render an untyped `TypeDef` (a type-param entry in a DefDef's
+     *  type-param clause) as a Scala source string. Falls back to the
+     *  bare name if `show` fails or produces something un-splice-able.
+     */
+    private def renderTypeParam(td: untpd.TypeDef)(using Context): String =
+      val name = td.name.toString
+      try
+        // Disable colours so the rendered string never carries ANSI
+        // escapes; otherwise they'd land in the synthesised
+        // `def __run__[<here>]` clause and trip the eval driver's
+        // parser ("illegal character '\\u001b'").
+        val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
+        val rendered = td.show(using printCtx)
+        if rendered.startsWith("[") then rendered.drop(1).reverse.dropWhile(_ == ']').reverse
+        else rendered
+      catch case _: Throwable => name
 
     override def transform(tree: Tree)(using Context): Tree = tree match
       // Lambda: its parameters become locals visible inside the body.
@@ -279,13 +365,22 @@ object EvalRewriter:
         val newExpr = withScope(blockNames)(transform(expr))
         cpy.Block(bk)(processed.toList, newExpr)
 
-      // Method definition: its term parameters are visible in the body.
-      // Method parameters are always immutable in Scala.
+      // Method definition: its term parameters are visible in the
+      // body, and so are its type parameters (the runtime copies
+      // them into the wrapper's `def __run__[...]` signature so a
+      // body like `def f[T] = eval("xs.map[T](...)")` can refer to
+      // `T`). Erasure means no runtime value is needed for type
+      // params; we just need them named in the wrapper's scope.
       case dd: DefDef =>
         val paramNames = dd.paramss.flatMap { clause =>
           clause.collect { case vd: ValDef => CapturedName(vd.name.toString, isVar = false) }
         }
-        val newRhs = withScope(paramNames)(transform(dd.rhs))
+        val typeParams: List[String] = dd.paramss.collectFirst {
+          case clause if clause.headOption.exists(_.isInstanceOf[TypeDef]) =>
+            clause.collect { case td: TypeDef => renderTypeParam(td) }
+        }.getOrElse(Nil)
+        val newRhs =
+          withTypeParams(typeParams)(withScope(paramNames)(transform(dd.rhs)))
         cpy.DefDef(dd)(dd.name, dd.paramss, dd.tpt, newRhs)
 
       // The eval call itself: rewrite to the 4-arg form
@@ -314,14 +409,16 @@ object EvalRewriter:
         val captured = currentBindings
         val newArgs = args.mapConserve(transform)
         val enclosingSrc = computeEnclosingSource(app.span)
+        val enclosingTypeParams = currentTypeParamsString
         if captured.exists(_.isVar) then
-          buildVarAwareCall(app, fn, newArgs, captured, enclosingSrc)
+          buildVarAwareCall(app, fn, newArgs, captured, enclosingSrc, enclosingTypeParams)
         else
           val bindArgs = captured.map(c => buildBind(c, app.span))
           val arrayArg = buildArray(bindArgs, app.span)
           val tpeLit = Literal(Constant("")).withSpan(app.span)
           val srcLit = Literal(Constant(enclosingSrc)).withSpan(app.span)
-          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit)
+          val tpsLit = Literal(Constant(enclosingTypeParams)).withSpan(app.span)
+          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit :+ tpsLit)
 
       case _ => super.transform(tree)
     end transform
@@ -337,7 +434,8 @@ object EvalRewriter:
         fn: Tree,
         newArgs: List[Tree],
         captured: List[CapturedName],
-        enclosingSrc: String
+        enclosingSrc: String,
+        enclosingTypeParams: String
     )(using Context): Tree =
       val span = app.span
 
@@ -352,17 +450,19 @@ object EvalRewriter:
         ).withSpan(span)
       }
 
-      // 2. the eval call (passing bind / bindVar args). 4-arg form
-      // includes the empty `expectedType` sentinel that
-      // `EvalTypeAnnotate` fills in with the typer-known `T`, and the
-      // enclosing-source string for the runtime verification pass.
+      // 2. the eval call (passing bind / bindVar args). 5-arg form:
+      // bindings, `expectedType` sentinel (filled in by
+      // `EvalTypeAnnotate` from `[T]`), `enclosingSource` for the
+      // verification pass, and `enclosingTypeParams` so the wrapper's
+      // `def __run__[...]` can refer to outer type names.
       val bindArgs: List[Tree] = captured.map { c =>
         if c.isVar then buildBindVar(c.name, span) else buildBind(c, span)
       }
       val arrayArg = buildArray(bindArgs, span)
       val tpeLit = Literal(Constant("")).withSpan(span)
       val srcLit = Literal(Constant(enclosingSrc)).withSpan(span)
-      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit)
+      val tpsLit = Literal(Constant(enclosingTypeParams)).withSpan(span)
+      val rebuiltCall = cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit :+ tpsLit)
       val resultDef = ValDef(
         Names.EvalResult.toTermName,
         TypeTree(),

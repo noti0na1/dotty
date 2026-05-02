@@ -290,9 +290,10 @@ class ReplDriver(settings: Array[String],
         code: String,
         bindings: Array[Eval.Binding],
         expectedType: String,
-        enclosingSource: String
+        enclosingSource: String,
+        enclosingTypeParams: String
     ): Either[Eval.CompileFailure, Any] =
-      evalDynamic(code, bindings, expectedType, enclosingSource)
+      evalDynamic(code, bindings, expectedType, enclosingSource, enclosingTypeParams)
   }
 
   /** Runtime `eval(code, bindings*)` callback. Compiles via a fresh,
@@ -310,7 +311,8 @@ class ReplDriver(settings: Array[String],
       code: String,
       bindings: Array[Eval.Binding],
       expectedType: String,
-      enclosingSource: String
+      enclosingSource: String,
+      enclosingTypeParams: String
   ): Either[Eval.CompileFailure, Any] =
     val state = currentState
     if state == null then
@@ -334,7 +336,7 @@ class ReplDriver(settings: Array[String],
     // Forward CLI settings from the live session (minus those incompatible
     // with the eval driver's standalone setup).
     val forwardedSettings = settings.filterNot(incompatibleOptions.contains)
-    Eval.evalIsolated(code, classLoader, bindings, replOutDir, replWrapperImports, forwardedSettings, expectedType, enclosingSource)
+    Eval.evalIsolated(code, classLoader, bindings, replOutDir, replWrapperImports, forwardedSettings, expectedType, enclosingSource, enclosingTypeParams)
   end evalDynamic
 
   // TODO: i5069

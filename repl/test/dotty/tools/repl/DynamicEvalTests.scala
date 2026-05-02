@@ -228,6 +228,77 @@ class DynamicEvalTests extends ReplTest:
     assertContains("List(101, 201, 101, 201)", storedOutput())
   }
 
+  @Test def blockLocalValShadowsLambdaParam = initially {
+    // The lambda binds `x`, the block-local `val x` shadows it. The
+    // rewriter's `currentBindings` deduplicates innermost-first, so
+    // only the inner `x` is captured; the body sees the inner.
+    run(
+      """|val r: List[Int] = List(1, 2, 3).map { x =>
+         |  val x = 100
+         |  eval[Int]("x")
+         |}""".stripMargin
+    )
+    assertContains("List(100, 100, 100)", storedOutput())
+  }
+
+  @Test def lambdaParamShadowsMethodParam = initially {
+    // `def f(x: Int)` binds `x`; the inner lambda binds another `x`.
+    // The eval body picks up the lambda's `x`.
+    run(
+      """|def f(x: Int): List[Int] =
+         |  List(10, 20).map(x => eval[Int]("x + 1"))
+         |f(999)""".stripMargin
+    )
+    assertContains("List(11, 21)", storedOutput())
+  }
+
+  @Test def innerVarShadowsOuterVal = initially {
+    // The inner block-local `var x` shadows the outer `val x`. The
+    // rewriter must trigger the var-cell sync-back path for the
+    // inner — and *only* the inner — even though an outer immutable
+    // `x` is also in scope.
+    run(
+      """|def f(): Int =
+         |  val x: Int = 7  // outer val, immutable; would normally bind by-value
+         |  {
+         |    var x: Int = 0  // inner var, shadows outer
+         |    eval[Unit]("x = x + 5")
+         |    x
+         |  }
+         |f()""".stripMargin
+    )
+    assertContains("val res0: Int = 5", storedOutput())
+  }
+
+  @Test def innerValShadowsOuterVar = initially {
+    // Outer `var x` shadowed by inner `val x`. The inner is what the
+    // body sees, and since the inner is a val no var-cell sync-back
+    // machinery fires.
+    run(
+      """|def f(): Int =
+         |  var x: Int = 100  // outer mutable
+         |  {
+         |    val x: Int = 7  // inner immutable, shadows outer
+         |    eval[Int]("x + 1")
+         |  }
+         |f()""".stripMargin
+    )
+    assertContains("val res0: Int = 8", storedOutput())
+  }
+
+  @Test def methodParamShadowedByBlockLocalDef = initially {
+    // The method parameter `g` is shadowed by a block-local `def g`.
+    // The block-local def is captured by eta-expansion; the body's
+    // call resolves to it.
+    run(
+      """|def f(g: Int): Int =
+         |  def g(x: Int): Int = x * 10
+         |  eval[Int]("g(4)")
+         |f(999)""".stripMargin
+    )
+    assertContains("val res0: Int = 40", storedOutput())
+  }
+
   @Test def lambdaCapturingComplexType = initially {
     // The post-typer `EvalTypeAnnotate` phase records `xs2`'s typer-side
     // type, so the synthesised wrapper parameter is `xs2: List[Int]`
@@ -724,14 +795,79 @@ class DynamicEvalTests extends ReplTest:
     assertContains("""val b: String = "hi"""", out)
   }
 
-  @Test def typeParameterNameNotInScopeInsideEval = initially {
-    // Trying to reference the enclosing method's `T` from inside the eval
-    // body fails: type parameters aren't injected as bindings, and the
-    // body's compilation is independent of the caller's type variables.
+  @Test def typeParameterNameInScopeInsideEval = initially {
+    // The rewriter copies the enclosing DefDef's type-param clause
+    // onto the wrapper's `def __run__[T]` signature, so a body that
+    // refers to `T` literally (`val tag: T = x; tag`) type-checks and
+    // runs. Erasure means no type argument needs to be passed at the
+    // reflective invoke; the body's `T` is just the wrapper's own
+    // type parameter, with the same erasure as the caller's `T`.
     run("""|def f[T](x: T): T = eval[T]("val tag: T = x; tag")
            |f(42)""".stripMargin)
+    assertContains("val res0: Int = 42", storedOutput())
+  }
+
+  @Test def typeParameterUsedInBindingTypeAndBody = initially {
+    // The motivating example: a binding whose type mentions T plus a
+    // body that uses T explicitly. Both the wrapper's signature and
+    // the body need T in scope.
+    run("""|def id[A](x: A): A = x
+           |def f[T](xs: List[T]): List[T] =
+           |  eval[List[T]]("xs.map[T](x => id[T](x))")
+           |f(List(1, 2, 3))
+           |f(List("a", "b"))""".stripMargin)
     val out = storedOutput()
-    assertContains("Not found: type T", out)
+    assertContains("List(1, 2, 3)", out)
+    assertContains("""List("a", "b")""", out)
+  }
+
+  @Test def boundedTypeParameterPreserved = initially {
+    // Bounded type params (`T <: AnyRef`) should round-trip through
+    // the wrapper signature with their bounds intact.
+    run("""|def f[T <: AnyRef](x: T): T = eval[T]("x")
+           |f("hello")""".stripMargin)
+    assertContains("val res0: String = \"hello\"", storedOutput())
+  }
+
+  @Test def shadowedTypeParameterIsConservative = initially {
+    // When an inner `def g[T]` shadows an outer `def f[T]`, a
+    // binding (`xs`) whose type uses the *outer* `T` must not be
+    // rendered with the inner's `T` in the wrapper signature: the
+    // two are different symbols even though they share a name. Our
+    // anchor-aware mentionsLocallyScopedSymbol bails on the binding
+    // type, so `xs` falls back to its runtime `Class` (here `List`).
+    // Erasure makes the result correct at runtime.
+    run("""|def f[T](x: T) =
+           |  val xs: List[T] = List(x)
+           |  def g[T](y: T) = eval[Any]("(xs, y)")
+           |  g[Int](100)
+           |val r = f("hello")""".stripMargin)
+    assertContains("(List(\"hello\"), 100)", storedOutput())
+  }
+
+  @Test def localTypeAliasDealiased = initially {
+    // A type alias defined inside the method scope can't be named
+    // inside the wrapper module (its symbol is term-owned). The
+    // post-typer phase dealiases such aliases when rendering the
+    // binding type, so the wrapper sees the underlying type.
+    run("""|def f(): Int =
+           |  type MyInt = Int
+           |  val n: MyInt = 42
+           |  eval[Int]("n + 1")
+           |f()""".stripMargin)
+    assertContains("val res0: Int = 43", storedOutput())
+  }
+
+  @Test def sessionTypeAliasPreserved = initially {
+    // Session-level aliases (defined at the REPL prompt, not inside
+    // a method) are *not* dealiased — they're nameable in the wrapper
+    // through the runtime's `import rs$line$N.{given, *}` bridge.
+    run("""|type Greeting = String
+           |def f(): String =
+           |  val s: Greeting = "hi"
+           |  eval[String]("s.toUpperCase")
+           |f()""".stripMargin)
+    assertContains("val res0: String = \"HI\"", storedOutput())
   }
 
   // ===========================================================================
