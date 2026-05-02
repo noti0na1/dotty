@@ -110,13 +110,34 @@ object EvalRewriter:
       isGiven: Boolean = false,
       defParamClause: Option[List[untpd.ValDef]] = None,
       defTypeParams: List[untpd.TypeDef] = Nil,
-      givenSummonTpt: Option[untpd.Tree] = None
+      givenSummonTpt: Option[untpd.Tree] = None,
+      // For class-member captures: the value at the bind site is
+      // `this.<name>` rather than the bare `<name>`. For the var
+      // sync-back path, we also write back via `this.<name>`.
+      valueRef: Option[untpd.Tree] = None,
+      assignTarget: Option[untpd.Tree] = None
   ):
     def isDef: Boolean = defParamClause.isDefined
 
   private object Names:
     val EvalResult: String = "__eval_result__"
+    val SelfThis: String = "__this__"
     def cell(name: String): String = s"${name}__cell"
+    /** Suffix for the "shadow-safe" copy of a class-member binding.
+     *  We capture each class member twice: under its bare name (so a
+     *  body that writes `eval("v")` reads `this.v`) AND under
+     *  `<name>__field` (so a body that writes `this.v` — typically
+     *  because a method parameter shadows the bare name — can be
+     *  rewritten by the runtime to use the `__field` form, which is
+     *  guaranteed not to collide with method params).
+     */
+    def field(name: String): String = s"${name}__field"
+    /** Synthetic name for the binding that captures
+     *  `<ClassName>.this`. Used when the body refers to the outer
+     *  class's instance via `OuterClass.this` from inside a nested
+     *  class.
+     */
+    def qualifiedThis(className: String): String = s"__this__${className}"
 
   /** What kind of top-level shape encloses the eval call. The
    *  verification compile wraps `Expression` shapes in a synthetic
@@ -284,6 +305,114 @@ object EvalRewriter:
       if seen.isEmpty then ""
       else seen.values.mkString("[", ", ", "]")
 
+    /** The class's type parameters, harvested from the primary
+     *  constructor's first paramlist when it's a TypeDef list.
+     */
+    private def extractClassTypeParams(tmpl: untpd.Template)(using Context): List[String] =
+      tmpl.constr.paramss.collectFirst {
+        case clause if clause.headOption.exists(_.isInstanceOf[TypeDef]) =>
+          clause.collect { case td: TypeDef => renderTypeParam(td) }
+      }.getOrElse(Nil)
+
+    /** The class's term-level members visible to an eval call inside
+     *  one of its methods. Two sources:
+     *
+     *    - Constructor parameters with `val` or `var` (which become
+     *      class fields).
+     *    - `val`/`var` definitions in the class body.
+     *
+     *  Each member is captured as a binding under its bare name, with
+     *  `this.<name>` as the value the rewriter splices at the bind
+     *  site. For `var` members the var-cell sync-back path also
+     *  writes back via `this.<name>`. We deliberately skip class
+     *  defs for now (they'd need eta-expansion that closes over
+     *  `this`, which is more involved) and skip private members
+     *  (the eval driver compiles in a separate module so it can't
+     *  access them).
+     *
+     *  Also adds `__this__` as a binding bound to plain `this`. The
+     *  runtime body-rewrite step rewrites `this.x` in the eval body
+     *  to `__this__.x` so the body can use the natural form even
+     *  when a method parameter shadows the bare member name.
+     */
+    private def extractClassMembers(tmpl: untpd.Template, className: String)(using Context): List[CapturedName] =
+      val out = mutable.ListBuffer.empty[CapturedName]
+
+      // Use qualified `<ClassName>.this.<name>` for the bind value so
+      // that an eval call inside a *nested* class can still capture
+      // members of the outer class: bare `this` from inside the
+      // nested class would refer to the nested instance, not the
+      // outer. Qualified-`this` always disambiguates.
+      val classTypeIdent = Ident(className.toTypeName)
+      def thisRef(span: Span): untpd.Tree =
+        This(classTypeIdent).withSpan(span)
+      def thisDot(name: String, span: Span): untpd.Tree =
+        Select(thisRef(span), name.toTermName).withSpan(span)
+
+      def addMember(name: String, isVar: Boolean, span: Span): Unit =
+        if name.nonEmpty then
+          val target = thisDot(name, span)
+          // Bare-name binding: read-only access. Shadowed by an
+          // inner method-param of the same name (innermost wins in
+          // `currentBindings`).
+          out += CapturedName(
+            name = name,
+            isVar = false,
+            valueRef = Some(target)
+          )
+          // Shadow-safe `__field` binding: never collides with user
+          // identifiers. For var members it carries the cell-based
+          // sync-back so writes through the body's `this.<name>`
+          // (rewritten to `<name>__field`) propagate to the outer
+          // class instance.
+          out += CapturedName(
+            name = Names.field(name),
+            isVar = isVar,
+            valueRef = Some(target),
+            assignTarget = if isVar then Some(target) else None
+          )
+
+      // Constructor val/var parameters become class fields. We
+      // include private fields too because the bind site executes
+      // inside one of the class's methods, where private members
+      // are accessible. The bind reads `this.v` and passes the
+      // *value* across the eval boundary; the wrapper doesn't
+      // access the field reflectively so visibility checks happen
+      // at the bind site, not the wrapper.
+      tmpl.constr.paramss.foreach {
+        case clause if clause.headOption.forall(_.isInstanceOf[ValDef]) =>
+          clause.foreach {
+            case vd: ValDef =>
+              val flags = vd.mods.flags
+              val isField = flags.is(Flags.ParamAccessor) || flags.is(Flags.Param)
+              if flags.is(Flags.Mutable) then addMember(vd.name.toString, isVar = true, vd.span)
+              else if isField then addMember(vd.name.toString, isVar = false, vd.span)
+            case _ =>
+          }
+        case _ =>
+      }
+
+      // Body val/var members.
+      tmpl.body.foreach {
+        case vd: ValDef =>
+          val flags = vd.mods.flags
+          addMember(vd.name.toString, isVar = flags.is(Flags.Mutable), vd.span)
+        case _ =>
+      }
+
+      // Always add __this__ (the innermost-class binding for body
+      // rewrites) and __this__<ClassName> (so a nested-class body
+      // that writes `OuterClass.this.x` can still resolve to the
+      // outer instance after the body rewrite).
+      out += CapturedName(name = Names.SelfThis, isVar = false, valueRef = Some(thisRef(tmpl.span)))
+      out += CapturedName(
+        name = Names.qualifiedThis(className),
+        isVar = false,
+        valueRef = Some(thisRef(tmpl.span))
+      )
+
+      out.toList
+
     /** Render an untyped `TypeDef` (a type-param entry in a DefDef's
      *  type-param clause) as a Scala source string. Falls back to the
      *  bare name if `show` fails or produces something un-splice-able.
@@ -365,6 +494,23 @@ object EvalRewriter:
         val newExpr = withScope(blockNames)(transform(expr))
         cpy.Block(bk)(processed.toList, newExpr)
 
+      // Class / trait / object definition. The Template body's
+      // methods are walked with the class's type parameters and
+      // val/var members in scope (so an eval call inside a method
+      // can refer to them by name and so the wrapper signature
+      // carries the class's type-param clause). We also push a
+      // synthetic `__this__` binding bound to `this`, and the
+      // runtime body-rewrite step rewrites `this.x` references in
+      // the eval body to `__this__.x` so users can name fields
+      // via the natural `this.` form even when method parameters
+      // shadow the bare name.
+      case td @ TypeDef(_, tmpl: Template) =>
+        val classTypeParams = extractClassTypeParams(tmpl)
+        val classMembers = extractClassMembers(tmpl, td.name.toString)
+        val newRhs =
+          withTypeParams(classTypeParams)(withScope(classMembers)(transform(tmpl)))
+        cpy.TypeDef(td)(td.name, newRhs)
+
       // Method definition: its term parameters are visible in the
       // body, and so are its type parameters (the runtime copies
       // them into the wrapper's `def __run__[...]` signature so a
@@ -439,10 +585,12 @@ object EvalRewriter:
     )(using Context): Tree =
       val span = app.span
 
-      // 1. cell vals: `val name__cell = Eval.VarCell(name)`.
+      // 1. cell vals: `val name__cell = Eval.VarCell(<source>)`. For
+      // a local `var x` the source is the plain `x`; for a class
+      // `var v` it's the `this.v` tree the rewriter recorded.
       val cellDefs: List[Tree] = captured.collect { case c if c.isVar =>
         val cellApply = makeFqn("dotty.tools.repl.Eval.VarCell.apply", span)
-        val arg = Ident(c.name.toTermName).withSpan(span)
+        val arg = c.valueRef.getOrElse(Ident(c.name.toTermName).withSpan(span))
         ValDef(
           Names.cell(c.name).toTermName,
           TypeTree(),
@@ -469,11 +617,14 @@ object EvalRewriter:
         rebuiltCall
       ).withSpan(span)
 
-      // 3. sync-back assignments: `name = name__cell.get()`.
+      // 3. sync-back assignments: `<target> = name__cell.get()`. The
+      // target is the local `name` for plain vars, or `this.name` for
+      // class var members.
       val syncs: List[Tree] = captured.collect { case c if c.isVar =>
         val cellRef = Ident(Names.cell(c.name).toTermName).withSpan(span)
         val getCall = Apply(Select(cellRef, "get".toTermName).withSpan(span), Nil).withSpan(span)
-        Assign(Ident(c.name.toTermName).withSpan(span), getCall).withSpan(span)
+        val target = c.assignTarget.getOrElse(Ident(c.name.toTermName).withSpan(span))
+        Assign(target, getCall).withSpan(span)
       }
 
       // 4. yield the eval result.
@@ -643,11 +794,13 @@ object EvalRewriter:
                 else "dotty.tools.repl.Eval.bind"
       val bindFn = makeFqn(fqn, span)
       val nameLit = Literal(Constant(c.name)).withSpan(span)
-      val valueRef = c.givenSummonTpt match
-        case Some(tpt) => buildSummonOf(tpt, span)
-        case None => c.defParamClause match
-          case Some(clause) => buildEtaExpansion(c.name, c.defTypeParams, clause, span)
-          case None => Ident(c.name.toTermName).withSpan(span)
+      val valueRef = c.valueRef match
+        case Some(tree) => tree
+        case None => c.givenSummonTpt match
+          case Some(tpt) => buildSummonOf(tpt, span)
+          case None => c.defParamClause match
+            case Some(clause) => buildEtaExpansion(c.name, c.defTypeParams, clause, span)
+            case None => Ident(c.name.toTermName).withSpan(span)
       val tpeLit = Literal(Constant("")).withSpan(span)
       Apply(bindFn, nameLit :: valueRef :: tpeLit :: Nil).withSpan(span)
 

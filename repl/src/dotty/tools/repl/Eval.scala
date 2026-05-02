@@ -428,7 +428,13 @@ object Eval:
     // This way the inner verification compile reconstructs the full
     // original lexical context — def, outer body, inner body — and
     // capture-checks them as one source.
-    val rewrittenCode = rewriteUserCode(code, bindings, enclosingSource, enclosingTypeParams)
+    val rewrittenCode0 = rewriteUserCode(code, bindings, enclosingSource, enclosingTypeParams)
+    // For eval calls inside class methods, the rewriter captured a
+    // synthetic `__this__` binding pointing at the outer instance.
+    // Rewrite `this.<x>` references in the body to `__this__.<x>` so
+    // the user's natural `this.` syntax accesses the outer fields
+    // instead of the wrapper module's (empty) `this`.
+    val rewrittenCode = rewriteThisInBody(rewrittenCode0, bindings)
 
     // Pin the wrapper's return type to the caller's `T` when we have it.
     // The body then type-checks against `T` and a mismatch surfaces as a
@@ -675,6 +681,104 @@ object Eval:
 
   private def mightContainNestedEval(code: String): Boolean =
     code.contains("eval(") || code.contains("eval[")
+
+  /** When the bindings include the synthetic `__this__` (i.e. the
+   *  rewriter captured the outer-class instance for an eval call
+   *  inside a class method), rewrite top-level `this.x` references
+   *  in the body:
+   *
+   *    - `this.x` where `<x>__field` is one of our captured
+   *      class-member bindings → rewritten to bare `<x>__field`.
+   *      The wrapper has `<x>__field` as a local (val-typed for val
+   *      members; cell-backed `var` for var members), guaranteed not
+   *      to collide with method-parameter names. Reads see the
+   *      bind-site value; writes flow through the var-cell sync-back.
+   *    - `this.x` where `<x>__field` is *not* in bindings (e.g. a
+   *      class method or a member we didn't capture) → rewritten to
+   *      `__this__.x`. The wrapper has `__this__: C[...]` and
+   *      accesses the field/method directly. Visibility check
+   *      happens at the wrapper compile, so this only succeeds for
+   *      accessible members.
+   *    - bare `this` (without a `.x` selection) → `__this__`.
+   *
+   *  Only top-level `this` references are touched: a `this` inside a
+   *  body-local class definition refers to *that* class, not the
+   *  outer. Falls back to the original code when parsing fails or
+   *  the pretty-printer round-trip can't be re-parsed (per EVAL.md
+   *  "Pretty-printer round-trip in nested eval"; same caveat).
+   */
+  private def rewriteThisInBody(code: String, bindings: Array[Binding]): String =
+    val needsRewrite = bindings.exists(_.name == "__this__")
+    if !needsRewrite || !code.contains("this") then return code
+    val memberFieldNames: Set[String] =
+      bindings.iterator.map(_.name).filter(_.endsWith("__field")).toSet
+    // Qualified `__this__<ClassName>` bindings the rewriter pushed
+    // for each enclosing class. Used to translate `OuterClass.this`
+    // references in the body when the eval is inside a nested class.
+    val qualifiedThisNames: Set[String] =
+      bindings.iterator
+        .map(_.name)
+        .filter(n => n.startsWith("__this__") && n != "__this__")
+        .toSet
+    val ctxBase = new ContextBase
+    val ctx0 = ctxBase.initialCtx
+    val ctx = ctx0.fresh.setSetting(ctx0.settings.color, "never")
+    try
+      import dotty.tools.dotc.parsing.Parsers.Parser
+      import dotty.tools.dotc.util.SourceFile
+      import dotty.tools.dotc.ast.untpd
+      import dotty.tools.dotc.core.Decorators.toTermName
+      val source = SourceFile.virtual("<eval-body>", code)
+      val parser = new Parser(source)(using ctx)
+      val tree = parser.block()
+      val mapper = new untpd.UntypedTreeMap:
+        var localTemplateDepth = 0
+        override def transform(t: untpd.Tree)(using Context): untpd.Tree = t match
+          case td: untpd.TypeDef if td.rhs.isInstanceOf[untpd.Template] =>
+            localTemplateDepth += 1
+            try super.transform(t) finally localTemplateDepth -= 1
+          case sel @ untpd.Select(thisTree: untpd.This, name) if localTemplateDepth == 0 =>
+            val nameStr = name.toString
+            val fieldName = s"${nameStr}__field"
+            val qualName = thisTree.qual match
+              case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
+              case _ => ""
+            // Prefer the `<x>__field` binding whenever it exists,
+            // regardless of whether `this` is qualified. The
+            // `__field` binding is cell-backed for var members so
+            // writes propagate via sync-back. Routing through
+            // `__this__<Class>.x` instead would mutate the outer
+            // instance directly, which collides with the cell's
+            // sync-back overwriting it. We accept the limitation
+            // that name collisions across nested-class members
+            // shadow innermost-wins.
+            if memberFieldNames.contains(fieldName) then
+              untpd.Ident(fieldName.toTermName).withSpan(sel.span)
+            else if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
+              untpd.Select(
+                untpd.Ident(s"__this__$qualName".toTermName).withSpan(sel.span),
+                name.toTermName
+              ).withSpan(sel.span)
+            else
+              // Fall back to the innermost __this__.
+              untpd.Select(
+                untpd.Ident("__this__".toTermName).withSpan(sel.span),
+                name.toTermName
+              ).withSpan(sel.span)
+          case thisTree: untpd.This if localTemplateDepth == 0 =>
+            val qualName = thisTree.qual match
+              case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
+              case _ => ""
+            val targetName =
+              if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
+                s"__this__$qualName"
+              else "__this__"
+            untpd.Ident(targetName.toTermName).withSpan(t.span)
+          case _ => super.transform(t)
+      val rewritten = mapper.transform(tree)(using ctx).show(using ctx)
+      if isParseable(rewritten)(using ctx) then rewritten else code
+    catch case NonFatal(_) =>
+      code
 
   private def isParseable(code: String)(using Context): Boolean =
     try

@@ -61,25 +61,48 @@ class EvalTypeAnnotate extends Phase:
      */
     private var allowedTypeParams: Set[String] = Set.empty
 
-    /** The innermost enclosing DefDef while we descend. Used to
-     *  validate that an "allowed" type-param symbol is *actually*
-     *  owned by the wrapper-anchor DefDef and not shadowed by an
-     *  inner one with the same name. Without this check, a body that
-     *  captures a binding whose type involves an outer `T` would
-     *  silently get the inner DefDef's `T` in the wrapper signature
-     *  (different symbol, same name): still erases compatibly, but
-     *  semantically wrong.
+    /** The chain of enclosing scope symbols (DefDef and class
+     *  TypeDef) while we descend. Used to validate that an "allowed"
+     *  type-param symbol is *actually* owned by some scope enclosing
+     *  the eval call — not by a sibling or unrelated definition that
+     *  just happens to use the same name. Includes class scopes so
+     *  a class type parameter is reachable from a method body inside
+     *  that class.
      */
-    private val defDefStack = scala.collection.mutable.Stack.empty[Symbol]
+    private val scopeStack = scala.collection.mutable.Stack.empty[Symbol]
+
+    /** True iff `sym` would be shadowed by a closer enclosing scope
+     *  having a type parameter with the same name. The rewriter
+     *  copies the type-param names of all enclosing scopes into the
+     *  wrapper signature with innermost-wins deduplication, so a
+     *  shadowed outer T would render as a name that, in the wrapper,
+     *  resolves to the *inner* T. We bail in that case to keep the
+     *  capture sound at compile time (runtime is fine via erasure).
+     */
+    private def isShadowedByCloserScope(sym: Symbol)(using Context): Boolean =
+      import dotc.core.Flags
+      val name = sym.name.toString
+      val ownerIdx = scopeStack.toList.indexWhere(_ == sym.maybeOwner)
+      if ownerIdx <= 0 then false
+      else
+        scopeStack.toList.take(ownerIdx).exists { closer =>
+          closer.exists && closer.info.decls.exists { d =>
+            d.is(Flags.TypeParam) && d.name.toString == name
+          }
+        }
 
     override def transform(tree: Tree)(using Context): Tree =
-      // DefDef entry: track the symbol so type-param-owner checks
-      // can distinguish e.g. f's T from g's T when nested DefDefs
-      // shadow the same name.
+      // Track enclosing DefDef / class TypeDef symbols as we descend
+      // so the type-param-owner check can recognise both method type
+      // params and class type params, and detect shadowing across
+      // nested scopes.
       tree match
         case dd: DefDef =>
-          defDefStack.push(dd.symbol)
-          try return super.transform(dd) finally defDefStack.pop()
+          scopeStack.push(dd.symbol)
+          try return super.transform(dd) finally scopeStack.pop()
+        case td: TypeDef if td.isClassDef =>
+          scopeStack.push(td.symbol)
+          try return super.transform(td) finally scopeStack.pop()
         case _ =>
 
       // Handle the binding-side calls first (Eval.bind/bindVar/bindGiven),
@@ -96,8 +119,8 @@ class EvalTypeAnnotate extends Phase:
           // when synthesising the wrapper signature, so we want the
           // inner `T`, not the cell type itself.
           val tpe = if isVar then EvalTypeAnnotate.unwrapCellType(value.tpe) else value.tpe
-          val anchor = defDefStack.headOption.getOrElse(NoSymbol)
-          val tpeStr = EvalTypeAnnotate.renderType(tpe, allowedTypeParams, anchor)
+          val tpeStr =
+            EvalTypeAnnotate.renderType(tpe, allowedTypeParams, scopeStack.toSet, isShadowedByCloserScope)
           if tpeStr.isEmpty then app
           else
             val tpeLit = Literal(Constant(tpeStr)).withSpan(sentinel.span)
@@ -122,10 +145,9 @@ class EvalTypeAnnotate extends Phase:
             // it also benefits from the allow-list.
             val withChildren = super.transform(app).asInstanceOf[Apply]
             val tArg = extractTypeArg(withChildren.fun)
-            val anchor = defDefStack.headOption.getOrElse(NoSymbol)
             val tpeStr =
               if tArg eq null then ""
-              else EvalTypeAnnotate.renderType(tArg, allowedTypeParams, anchor)
+              else EvalTypeAnnotate.renderType(tArg, allowedTypeParams, scopeStack.toSet, isShadowedByCloserScope)
             withChildren.args match
               case c :: b :: (s @ Literal(Constant(""))) :: r if tpeStr.nonEmpty =>
                 val tpeLit = Literal(Constant(tpeStr)).withSpan(s.span)
@@ -251,35 +273,42 @@ object EvalTypeAnnotate:
    *  untracked.
    */
   private[repl] def renderType(tpe: Type)(using Context): String =
-    renderType(tpe, Set.empty, NoSymbol)
+    renderType(tpe, Set.empty, Set.empty, _ => false)
 
   /** Like the no-arg overload but also allows references to the
-   *  type-parameter names in `allowedTypeParams` (typically the type
-   *  parameters of the enclosing DefDef of the eval call site, which
-   *  the runtime copies onto the wrapper's `__run__` signature) —
-   *  but *only* when those type-param symbols are actually owned by
-   *  `anchor` (the innermost enclosing DefDef of the eval call). A
-   *  same-named outer-DefDef type param shadowed by an inner one
-   *  resolves to the outer's symbol; without the anchor check we'd
-   *  silently substitute the inner's `T` for it in the wrapper's
-   *  signature, which is a soundness leak.
+   *  type-parameter names in `allowedTypeParams` — but *only* when
+   *  the symbol's owner is one of the `enclosingScopes` and a closer
+   *  enclosing scope doesn't shadow the same name (`isShadowed`).
+   *  This admits both method type params (DefDef-owned) and class
+   *  type params (TypeDef-owned), while still rejecting shadowed
+   *  outer type params that would silently bind to the inner same-
+   *  named one in the wrapper signature.
    */
   private[repl] def renderType(
       tpe: Type,
       allowedTypeParams: Set[String],
-      anchor: Symbol
+      enclosingScopes: Set[Symbol],
+      isShadowed: Symbol => Boolean
   )(using Context): String =
     if tpe == null || !tpe.exists || tpe.isError then return ""
     val widened = tpe.widen
     if !widened.exists || widened.isError then return ""
     if isUselessType(widened) then return ""
     val resolved = dealiasLocalAliases(widened)
-    if mentionsLocallyScopedSymbol(resolved, allowedTypeParams, anchor) then return ""
+    if mentionsLocallyScopedSymbol(resolved, allowedTypeParams, enclosingScopes, isShadowed) then return ""
     val cleaned = stripCaptureAnnotations(resolved)
     // Disable colours so the rendered string never contains ANSI
     // escapes that would later confuse the eval driver's parser.
     val printCtx = ctx.fresh.setSetting(ctx.settings.color, "never")
-    try cleaned.show(using printCtx)
+    try
+      val rendered = cleaned.show(using printCtx)
+      // Path-dependent types that mention `<ClassName>.this.<member>`
+      // can't appear in the wrapper signature: the wrapper module
+      // isn't lexically inside any of the outer classes. Convert to
+      // the projection form `<ClassName>#<member>`, which references
+      // the same class without requiring an instance path. Erasure
+      // makes the two equivalent at runtime.
+      rendered.replace(".this.", "#")
     catch case _: Throwable => ""
 
   /** Recursively drop `CapturingType` wrappers and `@retains[...]`
@@ -337,7 +366,8 @@ object EvalTypeAnnotate:
   private def mentionsLocallyScopedSymbol(
       tpe: Type,
       allowedTypeParams: Set[String],
-      anchor: Symbol
+      enclosingScopes: Set[Symbol],
+      isShadowed: Symbol => Boolean
   )(using Context): Boolean =
     import dotc.core.Flags
     tpe.existsPart { part =>
@@ -345,20 +375,21 @@ object EvalTypeAnnotate:
       sym.exists && {
         val isTypeParam = sym.is(Flags.TypeParam)
         val isTermOwned = sym.maybeOwner.exists && sym.maybeOwner.isTerm
-        // A type-param mention is allowed only when:
-        //   - the rewriter said its name is in scope at the eval call
-        //     (i.e. it's part of the wrapper's `def __run__[...]`
-        //     signature), AND
-        //   - the *symbol* is owned by the innermost enclosing DefDef
-        //     (the wrapper anchor). Without the second clause, an
-        //     outer DefDef's `T` shadowed by an inner DefDef's `T`
-        //     would slip through using the inner's name; semantically
-        //     they're different types.
         val nameAllowed =
           allowedTypeParams.nonEmpty && allowedTypeParams.contains(sym.name.toString)
+        // The type-param symbol must be owned by some enclosing
+        // scope (DefDef or class) of the eval call. Without that
+        // check, a same-named type-param in some unrelated location
+        // could be mistaken for an in-scope one.
         val ownerOk =
-          anchor.exists && sym.maybeOwner.exists && sym.maybeOwner == anchor
-        val allowed = (isTypeParam || isTermOwned) && nameAllowed && ownerOk
+          sym.maybeOwner.exists && enclosingScopes.contains(sym.maybeOwner)
+        // ...and must not be shadowed by a closer scope: e.g. inner
+        // `def g[T]` shadowing outer `class C[T]`. Erasure makes
+        // shadowed bindings still functional at runtime but the
+        // wrapper signature would attribute the wrong T.
+        val notShadowed = !isShadowed(sym)
+        val allowed =
+          (isTypeParam || isTermOwned) && nameAllowed && ownerOk && notShadowed
         (isTypeParam || isTermOwned) && !allowed
       }
     }

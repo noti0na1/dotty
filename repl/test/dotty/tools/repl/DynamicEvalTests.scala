@@ -858,6 +858,176 @@ class DynamicEvalTests extends ReplTest:
     assertContains("val res0: Int = 43", storedOutput())
   }
 
+  @Test def classScopeGetterAndSetter = initially {
+    // The motivating example: an `eval` inside a class method that
+    // reads/writes a private var member, parameterised by a class
+    // type-param `T`. The rewriter:
+    //   - copies `[T]` from the class onto the wrapper signature,
+    //   - captures `v` as both a bare-name binding and a
+    //     `v__field` cell-backed binding pointing at `this.v`,
+    //   - captures `__this__` for non-member `this.x` accesses,
+    //   - rewrites `this.v` in the body to `v__field` so writes
+    //     flow through the var-cell sync-back back to `this.v`.
+    run(
+      """|class C[T](private var v: T):
+         |  def get: T = eval[T]("v")
+         |  def set(v: T): T = eval[T]("val old = this.v; this.v = v; old")
+         |val c = new C[Int](10)
+         |c.get
+         |c.set(99)
+         |c.get""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 10", out)
+    assertContains("val res1: Int = 10", out)
+    assertContains("val res2: Int = 99", out)
+  }
+
+  @Test def classScopeReadOnlyVal = initially {
+    // Plain `val` member accessed via the bare name (no shadowing).
+    run(
+      """|class P(val x: Int, val y: Int):
+         |  def magnitudeSquared: Int = eval[Int]("x * x + y * y")
+         |val p = new P(3, 4)
+         |p.magnitudeSquared""".stripMargin
+    )
+    assertContains("val res0: Int = 25", storedOutput())
+  }
+
+  @Test def multiLineBodyTripleQuoted = initially {
+    // The body is a triple-quoted multi-line string. The wrapper
+    // splices it inside `def __run__ = { ... }` braces, so Scala 3
+    // parses it under the brace-based syntax (semicolons / newlines
+    // separate statements, indentation isn't structurally
+    // significant). The body can still use indentation-sensitive
+    // constructs (`if then ... else`) inside, as long as they're
+    // self-consistent.
+    val body =
+      "\n  val sum = a + b" +
+      "\n  val prod = a * b" +
+      "\n  sum + prod\n"
+    run(
+      "def f(a: Int, b: Int): Int = eval[Int](\"\"\"" + body + "\"\"\")\n" +
+      "f(3, 4)"
+    )
+    assertContains("val res0: Int = 19", storedOutput())
+  }
+
+  @Test def multiLineBodyEscapedNewlines = initially {
+    // Same multi-line body but expressed with `\n` in a regular
+    // string literal — the content reaching the eval driver is
+    // identical.
+    run(
+      """|def g(x: Int): String = eval[String]("\nval doubled = x * 2\nval s = doubled.toString\ns + \"!\"\n")
+         |g(7)""".stripMargin
+    )
+    assertContains("val res0: String = \"14!\"", storedOutput())
+  }
+
+  @Test def multiLineBodyIfElseIndented = initially {
+    // Indentation-sensitive `if then ... else ...` inside the body.
+    // The body's relative indentation is internally consistent so
+    // the parser handles it correctly when spliced inside the
+    // wrapper's outer braces.
+    val body =
+      "\n  if n > 0 then" +
+      "\n    val a = n * 2" +
+      "\n    a + 1" +
+      "\n  else" +
+      "\n    val b = -n" +
+      "\n    b * 3\n"
+    run(
+      "def h(n: Int): Int = eval[Int](\"\"\"" + body + "\"\"\")\n" +
+      "h(5)\n" +
+      "h(-2)"
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 11", out)
+    assertContains("val res1: Int = 6", out)
+  }
+
+  @Test def multiLineBodyInClassMethod = initially {
+    // Multi-line body inside a class method exercises the
+    // `rewriteThisInBody` parse / pretty-print round-trip in
+    // addition to the wrapper splice. Two reads + one write to
+    // `this.x` interleaved with intermediate vals.
+    val body =
+      "\n  val before = this.x" +
+      "\n  val delta = step * 2" +
+      "\n  this.x = this.x + delta" +
+      "\n  before\n"
+    run(
+      "class Counter(var x: Int):\n" +
+      "  def advance(step: Int): Int = eval[Int](\"\"\"" + body + "\"\"\")\n" +
+      "val c = new Counter(10)\n" +
+      "c.advance(3)\n" +
+      "c.x"
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 10", out)
+    assertContains("val res1: Int = 16", out)
+  }
+
+  @Test def nestedClassReadsOuterMember = initially {
+    // Eval inside class B (nested in A) should be able to access A's
+    // members via the qualified `A.this.<member>` syntax. The
+    // rewriter captures both A's and B's members; the outer A's
+    // members are bound via `A.this.<name>` so the bind site (which
+    // is inside B) reads the right enclosing instance. The body
+    // rewrite step translates `A.this.x` → `__this__A.x` (where
+    // `__this__A` is the captured `A.this`) and `this.y` →
+    // `y__field` for B's own members.
+    run(
+      """|class A:
+         |  val a: Int = 10
+         |  class B:
+         |    val b: Int = 20
+         |    def sum: Int = eval[Int]("A.this.a + this.b")
+         |val outer = new A
+         |val ab = new outer.B
+         |ab.sum""".stripMargin
+    )
+    assertContains("val res0: Int = 30", storedOutput())
+  }
+
+  @Test def nestedClassWritesOuterVar = initially {
+    // Mutating an outer-class var from inside a nested class. The
+    // outer's `n` is captured under `n__field` (cell-backed); the
+    // body's `A.this.n = ...` is rewritten to use that cell.
+    run(
+      """|class A:
+         |  var n: Int = 0
+         |  class B:
+         |    def bump(): Int = eval[Int]("A.this.n = A.this.n + 1; A.this.n")
+         |val outer = new A
+         |val ab = new outer.B
+         |ab.bump()
+         |ab.bump()
+         |outer.n""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 1", out)
+    assertContains("val res1: Int = 2", out)
+    assertContains("val res2: Int = 2", out)
+  }
+
+  @Test def classScopeMethodParamShadowsField = initially {
+    // Method parameter `x` shadows the class field `x` for the bare
+    // name. The body uses `this.x` to access the field; the rewrite
+    // routes through `x__field`. The body's `x` (no `this.`) still
+    // refers to the method parameter.
+    run(
+      """|class Box(var x: Int):
+         |  def addAndOld(x: Int): Int = eval[Int]("val old = this.x; this.x = this.x + x; old")
+         |val b = new Box(10)
+         |b.addAndOld(5)
+         |b.x""".stripMargin
+    )
+    val out = storedOutput()
+    assertContains("val res0: Int = 10", out)
+    assertContains("val res1: Int = 15", out)
+  }
+
   @Test def sessionTypeAliasPreserved = initially {
     // Session-level aliases (defined at the REPL prompt, not inside
     // a method) are *not* dealiased — they're nameable in the wrapper
