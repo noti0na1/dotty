@@ -1632,3 +1632,87 @@ class DynamicEvalAgentApiTests extends ReplTest:
     }
 
 end DynamicEvalAgentApiTests
+
+/** Tests for the `-Xrepl-eval-log-dir` compiler flag, which writes
+ *  per-invocation log files for each `eval(...)` call. Each call
+ *  produces:
+ *
+ *    - `eval_<timestamp>_enclosingSource.scala`: the enclosing
+ *      top-level statement at the call site, with the eval call's
+ *      location replaced by a placeholder.
+ *    - `eval_<timestamp>_code.scala`: the body string the user
+ *      submitted to `eval(...)`.
+ *    - `eval_<timestamp>_error.scala`: only on a compile failure;
+ *      carries the diagnostic text and the synthesised source the
+ *      eval driver was trying to compile.
+ */
+class DynamicEvalLogTests extends ReplTest(
+  ReplTest.defaultOptions ++ Array(
+    "-Xrepl-eval-log-dir:" + DynamicEvalLogTests.tempDir.getAbsolutePath
+  )
+):
+  import DynamicEvalLogTests.*
+
+  @Test def writesEnclosingSourceAndCodeOnSuccess =
+    initially {
+      // Clean slate before this test.
+      clearLogDir()
+      run("""|def f(i: Int, j: Int): Int = eval[Int]("i + j")
+             |f(10, 32)""".stripMargin)
+      assertContains("val res0: Int = 42", storedOutput())
+      val files = listLogs()
+      val enc = files.find(_.endsWith("_enclosingSource.scala")).getOrElse(
+        fail(s"missing enclosingSource log: $files").asInstanceOf[String])
+      val code = files.find(_.endsWith("_code.scala")).getOrElse(
+        fail(s"missing code log: $files").asInstanceOf[String])
+      assertTrue(s"no error log expected on success: $files",
+        files.forall(!_.endsWith("_error.scala")))
+      val encContent = readLog(enc)
+      val codeContent = readLog(code)
+      assertTrue(s"enclosingSource should mention `def f`: $encContent",
+        encContent.contains("def f(i: Int, j: Int): Int"))
+      assertTrue(s"enclosingSource should contain placeholder: $encContent",
+        encContent.contains("__evalBodyPlaceholder"))
+      assertTrue(s"code should be the body string: $codeContent",
+        codeContent.trim == "i + j")
+    }
+
+  @Test def writesErrorLogOnCompileFailure =
+    initially {
+      clearLogDir()
+      run("""|import dotty.tools.repl.EvalCompileException
+             |val r = try eval[Int]("undefinedSymbol + 1")
+             |        catch case _: EvalCompileException => -1
+             |r""".stripMargin)
+      assertContains("val res0: Int = -1", storedOutput())
+      val files = listLogs()
+      val err = files.find(_.endsWith("_error.scala")).getOrElse(
+        fail(s"missing error log: $files").asInstanceOf[String])
+      val errContent = readLog(err)
+      assertTrue(s"error log should mention diagnostic: $errContent",
+        errContent.contains("Not found: undefinedSymbol"))
+      assertTrue(s"error log should embed generated source: $errContent",
+        errContent.contains("__EvalWrapper_"))
+    }
+
+end DynamicEvalLogTests
+
+object DynamicEvalLogTests:
+  private val tempDir: java.io.File =
+    val d = java.io.File.createTempFile("eval-log-", "-test")
+    d.delete()
+    d.mkdirs()
+    d.deleteOnExit()
+    d
+
+  def clearLogDir(): Unit =
+    val files = tempDir.listFiles()
+    if files != null then files.foreach(_.delete())
+
+  def listLogs(): List[String] =
+    val files = tempDir.listFiles()
+    if files == null then Nil else files.map(_.getName).toList
+
+  def readLog(name: String): String =
+    val path = new java.io.File(tempDir, name).toPath
+    new String(java.nio.file.Files.readAllBytes(path))

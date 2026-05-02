@@ -336,7 +336,12 @@ class ReplDriver(settings: Array[String],
     // Forward CLI settings from the live session (minus those incompatible
     // with the eval driver's standalone setup).
     val forwardedSettings = settings.filterNot(incompatibleOptions.contains)
-    Eval.evalIsolated(code, classLoader, bindings, replOutDir, replWrapperImports, forwardedSettings, expectedType, enclosingSource, enclosingTypeParams)
+    val evalLogDir = ctx.settings.XreplEvalLogDir.value(using ctx)
+    Eval.evalIsolated(
+      code, classLoader, bindings, replOutDir, replWrapperImports,
+      forwardedSettings, expectedType, enclosingSource, enclosingTypeParams,
+      evalLogDir
+    )
   end evalDynamic
 
   // TODO: i5069

@@ -325,8 +325,14 @@ object Eval:
       compilerSettings: Array[String],
       expectedType: String,
       enclosingSource: String = "",
-      enclosingTypeParams: String = ""
+      enclosingTypeParams: String = "",
+      evalLogDir: String = ""
   ): Either[CompileFailure, Any] =
+    // Per-invocation log: write the enclosing source (with placeholder)
+    // and the body the user submitted into `evalLogDir`. The error
+    // file is written below if the verify or wrapper compile fails.
+    // Timestamp is shared across the three files of a single call.
+    val logTimestamp = if evalLogDir.nonEmpty then writeEvalLogStart(evalLogDir, enclosingSource, code) else ""
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
 
@@ -353,7 +359,9 @@ object Eval:
     // form wraps it in `EvalResult.failure`.
     if enclosingSource.nonEmpty && captureCheckingEnabled(compilerSettings) then
       verifyEnclosing(code, enclosingSource, classLoader, replOutDir, replWrapperImports, compilerSettings) match
-        case Some(f) => return Left(f)
+        case Some(f) =>
+          if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, f)
+          return Left(f)
         case None =>
 
     // Pre-compute the source-level type name for each binding once.
@@ -471,7 +479,9 @@ object Eval:
 
     compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
       case Left(errs) =>
-        return Left(new CompileFailure(errs.toArray, source))
+        val failure = new CompileFailure(errs.toArray, source)
+        if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, failure)
+        return Left(failure)
       case Right(()) =>
 
     // Use a custom classloader for the eval-compiled wrapper that
@@ -507,6 +517,53 @@ object Eval:
       val cause = e.getCause
       if cause != null then throw cause else throw e
   end evalIsolated
+
+  /** Write the per-invocation log files for an eval call:
+   *
+   *    - `eval_<timestamp>_enclosingSource.scala`: the source of the
+   *      enclosing top-level statement at the call site, with the
+   *      eval call's span replaced by a placeholder. Useful for
+   *      replaying the call's lexical context.
+   *    - `eval_<timestamp>_code.scala`: the body string the user
+   *      submitted to `eval(...)`.
+   *
+   *  Returns the timestamp string used in the filenames so the
+   *  error file (written later, only on compile failure) can share
+   *  it. Returns the empty string when logging fails for any reason
+   *  — we don't want logging IO errors to fail the eval call itself.
+   */
+  private def writeEvalLogStart(evalLogDir: String, enclosingSource: String, code: String): String =
+    try
+      val dir = new java.io.File(evalLogDir)
+      if !dir.exists then dir.mkdirs()
+      val ts = s"${System.currentTimeMillis}_${java.util.UUID.randomUUID.toString.take(8).replace('-', '_')}"
+      val srcFile = new java.io.File(dir, s"eval_${ts}_enclosingSource.scala")
+      val codeFile = new java.io.File(dir, s"eval_${ts}_code.scala")
+      java.nio.file.Files.writeString(srcFile.toPath, enclosingSource)
+      java.nio.file.Files.writeString(codeFile.toPath, code)
+      ts
+    catch case NonFatal(_) => ""
+
+  /** Write `eval_<timestamp>_error.scala` carrying the diagnostic
+   *  text and the synthesised source the eval driver was trying to
+   *  compile. Best-effort: failures are silently swallowed.
+   */
+  private def writeEvalLogError(evalLogDir: String, timestamp: String, failure: CompileFailure): Unit =
+    try
+      val dir = new java.io.File(evalLogDir)
+      if !dir.exists then dir.mkdirs()
+      val errFile = new java.io.File(dir, s"eval_${timestamp}_error.scala")
+      val sb = new StringBuilder
+      sb ++= "// errors:\n"
+      failure.errors.foreach { e =>
+        sb ++= "// "
+        sb ++= e.replace("\n", "\n// ")
+        sb ++= "\n"
+      }
+      sb ++= "\n// generated source:\n"
+      sb ++= failure.source
+      java.nio.file.Files.writeString(errFile.toPath, sb.toString)
+    catch case NonFatal(_) => ()
 
   /** Whether the live REPL session has capture checking enabled (via a
    *  `-language:experimental.captureChecking` CLI flag). The
