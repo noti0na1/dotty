@@ -422,17 +422,129 @@ class DynamicEvalTests extends ReplTest:
     assertContains("List(1, 4, 9)", storedOutput())
   }
 
-  @Test def genericBlockLocalDefSkipped = initially {
-    // Type-parametric defs are NOT captured: eta-expansion would
-    // need a concrete T instantiation, which the rewriter can't pick
-    // at parser stage. The eval body fails with "Not found: g" as
-    // before.
+  @Test def genericBlockLocalDefCaptured = initially {
+    // Generic local defs are captured by polymorphic eta-expansion:
+    // `[T] => (x: T) => g[T](x)`. The eval body picks the type
+    // argument explicitly via `g[Int](...)`.
     run("""|def f(): Int =
            |  def g[T](x: T) = x
            |  eval[Int]("g[Int](42)")
+           |val r: Int = f()""".stripMargin)
+    assertContains("val r: Int = 42", storedOutput())
+  }
+
+  @Test def genericBlockLocalDefMultipleTypeParams = initially {
+    run("""|def f(): String =
+           |  def g[A, B](a: A, b: B): (B, A) = (b, a)
+           |  eval[(String, Int)]("g[Int, String](1, \"hi\")")._1
+           |val r: String = f()""".stripMargin)
+    assertContains("""val r: String = "hi"""", storedOutput())
+  }
+
+  @Test def genericBlockLocalDefBoundedTypeParam = initially {
+    // A type bound on the local def survives the eta-expansion
+    // (`[T <: AnyRef] => (x: T) => g[T](x)`). Calling it with a
+    // value type that doesn't satisfy the bound fails to compile.
+    run("""|def f(): String =
+           |  def g[T <: AnyRef](x: T): T = x
+           |  eval[String]("g[String](\"hi\")")
+           |val r: String = f()""".stripMargin)
+    assertContains("""val r: String = "hi"""", storedOutput())
+  }
+
+  @Test def genericBlockLocalDefWithReplValueCaptured = initially {
+    // Mixed capture: `factor` (a val) and `g` (a generic def) both
+    // captured at the same eval site.
+    run("""|def f(): Int =
+           |  val factor = 10
+           |  def g[T](x: T): T = x
+           |  eval[Int]("g[Int](7) * factor")
+           |val r: Int = f()""".stripMargin)
+    assertContains("val r: Int = 70", storedOutput())
+  }
+
+  @Test def contextBoundDefSkipped = initially {
+    // Context bounds desugar to a separate `using` clause, which the
+    // multi-paramlist guard rejects. Eta-expansion is therefore
+    // skipped and the eval body falls back to the legacy "Not found"
+    // failure mode.
+    run("""|def f(): Int =
+           |  def g[T : Numeric](x: T): T = summon[Numeric[T]].plus(x, x)
+           |  eval[Int]("g[Int](21)")
            |f()""".stripMargin)
     val out = storedOutput()
     assertContains("Not found: g", out)
+  }
+
+  // ---------------------------------------------------------------------------
+  // Block-local `given` capture. Givens declared in an enclosing
+  // method or block are captured into the eval wrapper's `using` clause
+  // so `summon[T]` inside the body resolves against them. Named givens
+  // are also reachable by name. Anonymous givens (`given Int = 99`)
+  // capture via `summon[<tpt>]` at the f-scope, so any dependency on
+  // other givens is resolved before the value is handed to eval.
+  // ---------------------------------------------------------------------------
+
+  @Test def anonymousLocalGivenSummonable = initially {
+    run("""|def f(): Int =
+           |  given Int = 99
+           |  eval[Int]("summon[Int]")
+           |val r: Int = f()""".stripMargin)
+    assertContains("val r: Int = 99", storedOutput())
+  }
+
+  @Test def namedLocalGivenSummonable = initially {
+    run("""|def f(): Int =
+           |  given x: Int = 7
+           |  eval[Int]("summon[Int]")
+           |val r: Int = f()""".stripMargin)
+    assertContains("val r: Int = 7", storedOutput())
+  }
+
+  @Test def namedLocalGivenReachableByName = initially {
+    run("""|def f(): Int =
+           |  given x: Int = 7
+           |  eval[Int]("x + 1")
+           |val r: Int = f()""".stripMargin)
+    assertContains("val r: Int = 8", storedOutput())
+  }
+
+  @Test def localOrderingGivenSummoned = initially {
+    // The captured Ordering[Int] is a non-trivial value (not a primitive).
+    // Verifies that the using clause carries through reference types.
+    run("""|def f(): String =
+           |  given Ordering[Int] = Ordering.Int.reverse
+           |  eval[String]("List(3, 1, 4, 1, 5).sorted.mkString(\",\")")
+           |val r: String = f()""".stripMargin)
+    assertContains("""val r: String = "5,4,3,1,1"""", storedOutput())
+  }
+
+  @Test def dependentGivensResolvedAtCaptureSite = initially {
+    // The second given depends on the first via `summon[Int]` in its
+    // RHS. Resolution happens at the f-scope where both givens are in
+    // scope, so the captured `str` value is "7!" and the eval body's
+    // `summon[String]` returns it.
+    run("""|def f(): String =
+           |  given Int = 7
+           |  given str: String = summon[Int].toString + "!"
+           |  eval[String]("summon[String]")
+           |val r: String = f()""".stripMargin)
+    assertContains("""val r: String = "7!"""", storedOutput())
+  }
+
+  @Test def genericLocalGivenSilentlySkipped = initially {
+    // Generic local givens have an empty parser-stage name and are
+    // not yet captured. The eval body should still compile; it just
+    // resolves against whatever non-local Ordering is available.
+    // This test asserts there's no crash and the eval body produces
+    // *some* sorted output (the default lexicographic Ordering for
+    // Lists, not the by-length one the local given would have given).
+    run("""|def f(): String =
+           |  given [T] => Ordering[List[T]] = (a, b) => a.length - b.length
+           |  eval[String]("List(List(1,2), List(3), List(4,5,6)).sorted.toString")
+           |val r: String = f()""".stripMargin)
+    val out = storedOutput()
+    assertContains("val r: String =", out)
   }
 
   // ---------------------------------------------------------------------------

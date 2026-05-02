@@ -51,16 +51,31 @@ object EvalRewriter:
    *  Most captures are vals/vars (`defParamClause = None`). The `isVar`
    *  flag tells the bind site to wrap mutable captures in a `VarCell`.
    *
-   *  Block-local defs are captured by eta-expansion to a `FunctionN`
-   *  (`defParamClause = Some(...)`). The recorded parameter list lets
-   *  the bind site synthesise `(p1, ..., pn) => g(p1, ..., pn)` with
-   *  the parameter type annotations preserved, so the typer can give
-   *  the lambda a precise function type.
+   *  Block-local defs are captured by eta-expansion. The recorded
+   *  parameter list lets the bind site synthesise
+   *  `(p1, ..., pn) => g(p1, ..., pn)` with the original parameter
+   *  type annotations preserved, so the typer can give the lambda a
+   *  precise function type.
+   *
+   *  Generic defs (`defTypeParams.nonEmpty`) eta-expand to a
+   *  polymorphic function value: `[T] => (p: T) => g[T](p)`. The
+   *  typer assigns this an `[T] => T => R` type, which the
+   *  `EvalTypeAnnotate` phase records in the binding's `sourceType`.
+   *
+   *  Givens (`isGiven`) are routed through the runtime's `using`
+   *  clause so the eval body can `summon[T]` against them. Named
+   *  givens are captured by name (also reachable as `name`); anonymous
+   *  givens carry a synthesised `name` and capture via
+   *  `summon[givenSummonTpt]` so the f-scope's implicit search
+   *  resolves any dependency chain at capture time.
    */
   private final case class CapturedName(
       name: String,
       isVar: Boolean,
-      defParamClause: Option[List[untpd.ValDef]] = None
+      isGiven: Boolean = false,
+      defParamClause: Option[List[untpd.ValDef]] = None,
+      defTypeParams: List[untpd.TypeDef] = Nil,
+      givenSummonTpt: Option[untpd.Tree] = None
   ):
     def isDef: Boolean = defParamClause.isDefined
 
@@ -75,6 +90,16 @@ object EvalRewriter:
      *  records the names a single lambda, block, or method introduces.
      */
     private val scopeStack = mutable.Stack.empty[List[CapturedName]]
+
+    /** Counter for synthesising names for anonymous given captures.
+     *  These names are only used as the wrapper's parameter name; user
+     *  code never references them by name (it uses `summon[T]`).
+     */
+    private var givenCounterValue: Int = 0
+    private def freshGivenName(): String =
+      val idx = givenCounterValue
+      givenCounterValue += 1
+      s"__given_$idx"
 
     /** Seed the scope from outside. Used by `rewriteCode` so nested
      *  eval calls inside a body see the outer bindings.
@@ -112,12 +137,12 @@ object EvalRewriter:
         untpd.cpy.Function(fn)(newArgs, newBody)
 
       // Block: process stats in order, accumulating names from each
-      // val/var/def so subsequent stats and the trailing expression
-      // see them. Defs are captured by eta-expansion (see
-      // `buildEtaExpansion`); only "simple" defs qualify (single
-      // value paramlist, no implicits, no type params, no by-name).
-      // More exotic shapes are skipped silently and will fall through
-      // to the existing `Not found: g` failure mode at the eval body.
+      // val/var/def/given so subsequent stats and the trailing
+      // expression see them. Defs are captured by eta-expansion (see
+      // `buildEtaExpansion`); only "simple" defs qualify. Givens are
+      // routed through the runtime's `using` clause so `summon` works.
+      // Anonymous givens are captured via `summon[<tpt>]` since their
+      // parser-stage name is empty.
       case bk @ Block(stats, expr) =>
         val processed = mutable.ListBuffer.empty[Tree]
         var blockNames = List.empty[CapturedName]
@@ -126,14 +151,35 @@ object EvalRewriter:
           processed += newStat
           stat match
             case vd: ValDef =>
-              val isVar = vd.mods.is(Flags.Mutable)
-              blockNames = CapturedName(vd.name.toString, isVar) :: blockNames
-            case dd: DefDef if isCaptureableDef(dd) =>
-              val clause = dd.paramss.headOption.toList.flatten.collect { case vd: ValDef => vd }
+              val flags = vd.mods.flags
+              val isGiven = flags.is(Flags.Given)
+              if isGiven && vd.name.isEmpty then
+                // Anonymous given: synthesise a wrapper-only name; the
+                // captured value is `summon[<tpt>]` so any dependency
+                // chain is resolved at the f-scope.
+                val syntheticName = freshGivenName()
+                blockNames = CapturedName(
+                  syntheticName,
+                  isVar = false,
+                  isGiven = true,
+                  givenSummonTpt = Some(vd.tpt)
+                ) :: blockNames
+              else if !vd.name.isEmpty then
+                val isVar = flags.is(Flags.Mutable)
+                blockNames = CapturedName(
+                  vd.name.toString,
+                  isVar = isVar,
+                  isGiven = isGiven
+                ) :: blockNames
+              // else: empty-named non-given ValDef (shouldn't really
+              // happen in source); skip rather than emit a broken Ident("").
+            case dd: DefDef if !dd.name.isEmpty && isCaptureableDef(dd) =>
+              val (typeParams, valueParams) = splitParamClauses(dd)
               blockNames = CapturedName(
                 dd.name.toString,
                 isVar = false,
-                defParamClause = Some(clause)
+                defParamClause = Some(valueParams),
+                defTypeParams = typeParams
               ) :: blockNames
             case _ =>
         val newExpr = withScope(blockNames)(transform(expr))
@@ -214,23 +260,42 @@ object EvalRewriter:
       Block(cellDefs ++ (resultDef :: syncs), finalExpr).withSpan(span)
     end buildVarAwareCall
 
-    /** Whether `dd` can be eta-expanded into a `FunctionN` value for
-     *  capture. Conservative: rejects anything that would require
-     *  type-driven elaboration the typer doesn't perform under the
-     *  `Any` expected type at the bind site.
+    /** Split a def's `paramss` into its single (or empty) type-param
+     *  clause and its single (or empty) value-param clause. Assumes
+     *  `isCaptureableDef` has already accepted the def, which ensures
+     *  there's at most one clause of each kind.
+     */
+    private def splitParamClauses(dd: DefDef): (List[TypeDef], List[ValDef]) =
+      val tps = dd.paramss.collectFirst {
+        case clause if clause.headOption.exists(_.isInstanceOf[TypeDef]) =>
+          clause.collect { case td: TypeDef => td }
+      }.getOrElse(Nil)
+      val vps = dd.paramss.collectFirst {
+        case clause if clause.headOption.forall(_.isInstanceOf[ValDef]) && clause.nonEmpty =>
+          clause.collect { case vd: ValDef => vd }
+      }.getOrElse(Nil)
+      (tps, vps)
+
+    /** Whether `dd` can be eta-expanded for capture. Conservative:
+     *  rejects shapes the bind-site eta-expansion can't reproduce.
      *
      *  Accepted:
-     *    - parameterless defs (`def g = 42`).
-     *    - single value paramlist with concrete params.
+     *    - parameterless defs (`def g = 42`)
+     *    - single value paramlist (`def g(p: T): R`)
+     *    - single type paramlist with simple bounds, optionally
+     *      followed by a single value paramlist
+     *      (`def g[T](p: T): R`, `def g[T <: AnyRef](p: T): R`)
      *
      *  Rejected:
-     *    - generic defs (any clause containing TypeDefs).
-     *    - multiple paramlists (would need curried lambda).
-     *    - by-name params, varargs, implicit/given/erased modifiers.
-     *    - explicit `inline` or `transparent` defs.
+     *    - multiple paramlists of either kind
+     *    - by-name params, varargs, `implicit`/`given`/`erased` mods
+     *    - `inline`/`transparent` defs
+     *    - higher-kinded type params (rhs is a non-`TypeBoundsTree`)
+     *    - context bounds (those become a separate `using` clause,
+     *      caught here by the multi-paramlist check)
      */
     private def isCaptureableDef(dd: DefDef)(using Context): Boolean =
-      def acceptableMods(vd: ValDef): Boolean =
+      def acceptableValMods(vd: ValDef): Boolean =
         val flags = vd.mods.flags
         !flags.isOneOf(Flags.Implicit | Flags.Given | Flags.Erased)
       def acceptableTpt(tpt: Tree): Boolean = tpt match
@@ -239,14 +304,42 @@ object EvalRewriter:
         case PostfixOp(_, op) if op.name.toString == "*" => false
         case _ => true
       def acceptableClause(clause: List[ValDef | TypeDef]): Boolean =
-        clause.forall {
-          case vd: ValDef => acceptableMods(vd) && acceptableTpt(vd.tpt)
-          case _: TypeDef => false
-        }
+        // Determined by the kind of the first element. Empty clause is fine.
+        clause match
+          case Nil => true
+          case (_: TypeDef) :: _ =>
+            clause.forall {
+              case td: TypeDef => acceptableTypeParam(td)
+              case _ => false
+            }
+          case _ =>
+            clause.forall {
+              case vd: ValDef => acceptableValMods(vd) && acceptableTpt(vd.tpt)
+              case _ => false
+            }
+
       val mods = dd.mods.flags
-      !mods.isOneOf(Flags.Inline | Flags.Transparent)
-        && dd.paramss.length <= 1
-        && dd.paramss.forall(acceptableClause)
+      if mods.isOneOf(Flags.Inline | Flags.Transparent) then return false
+
+      // At most one type clause and one value clause.
+      val typeClauseCount = dd.paramss.count(_.headOption.exists(_.isInstanceOf[TypeDef]))
+      val valueClauseCount = dd.paramss.count {
+        case Nil => true
+        case (_: ValDef) :: _ => true
+        case _ => false
+      }
+      if typeClauseCount > 1 || valueClauseCount > 1 then return false
+      dd.paramss.forall(acceptableClause)
+
+    /** Type params we can replicate on a `PolyFunction`: only those
+     *  with a plain `TypeBoundsTree` rhs. Higher-kinded params and
+     *  context bounds (which the parser desugars away from the
+     *  TypeDef rhs) need more elaborate handling we don't support yet.
+     */
+    private def acceptableTypeParam(td: TypeDef): Boolean =
+      td.rhs match
+        case _: TypeBoundsTree => true
+        case _ => false
 
     private def isEvalCall(fn: Tree): Boolean = fn match
       case Ident(n) => n.toString == "eval"
@@ -273,39 +366,86 @@ object EvalRewriter:
      *  type-annotation phase then records.
      */
     private def buildBind(c: CapturedName, span: Span)(using Context): Tree =
-      val bindFn = makeFqn("dotty.tools.repl.Eval.bind", span)
+      val fqn = if c.isGiven then "dotty.tools.repl.Eval.bindGiven"
+                else "dotty.tools.repl.Eval.bind"
+      val bindFn = makeFqn(fqn, span)
       val nameLit = Literal(Constant(c.name)).withSpan(span)
-      val valueRef = c.defParamClause match
-        case Some(clause) => buildEtaExpansion(c.name, clause, span)
-        case None => Ident(c.name.toTermName).withSpan(span)
+      val valueRef = c.givenSummonTpt match
+        case Some(tpt) => buildSummonOf(tpt, span)
+        case None => c.defParamClause match
+          case Some(clause) => buildEtaExpansion(c.name, c.defTypeParams, clause, span)
+          case None => Ident(c.name.toTermName).withSpan(span)
       val tpeLit = Literal(Constant("")).withSpan(span)
       Apply(bindFn, nameLit :: valueRef :: tpeLit :: Nil).withSpan(span)
 
-    /** Build `(p1: T1, ..., pn: Tn) => name(p1, ..., pn)` for the
-     *  given def. Re-uses each original param's `tpt` so the lambda
-     *  has explicit parameter types (otherwise the typer can't infer
-     *  them: `Eval.bind`'s `value: Any` parameter offers no expected
-     *  function type to drive eta-expansion).
-     *
-     *  Empty `clause` (for `def g = 42`, a parameterless def) yields
-     *  `() => name`, which the typer types as `Function0[R]`.
+    /** Build `scala.Predef.summon[<tpt>]`. Used to capture anonymous
+     *  givens whose parser-stage name is empty: rather than reference
+     *  them by an empty Ident, we summon them at the call site (which
+     *  is in the same scope where the given was declared, so the
+     *  typer's implicit search finds it).
      */
-    private def buildEtaExpansion(name: String, clause: List[ValDef], span: Span)(using Context): Tree =
-      if clause.isEmpty then
-        // Nullary def: `() => name`.
-        Function(Nil, Ident(name.toTermName).withSpan(span)).withSpan(span)
+    private def buildSummonOf(tpt: Tree, span: Span)(using Context): Tree =
+      val summonRef = makeFqn("scala.Predef.summon", span)
+      TypeApply(summonRef, tpt :: Nil).withSpan(span)
+
+    /** Build the eta-expansion lambda for a captured def. Three shapes:
+     *
+     *    - Parameterless (`def g = 42`):
+     *        `() => name`             yielding `Function0[R]`.
+     *    - Monomorphic value paramlist (`def g(p: T): R`):
+     *        `(p: T) => name(p)`      yielding `T => R`.
+     *    - Polymorphic (`def g[T](p: T): R`):
+     *        `[T] => (p: T) => name[T](p)`  yielding `[T] => T => R`.
+     *
+     *  Each fresh param carries the `Param` flag (see
+     *  `untpd.makeParameter`); without it the typer rejects the ValDef
+     *  as a free declaration. Each fresh type param's rhs (its bounds)
+     *  is copied from the original so `def g[T <: AnyRef](...)` keeps
+     *  its bound on the polymorphic function value.
+     */
+    private def buildEtaExpansion(
+        name: String,
+        typeParams: List[TypeDef],
+        clause: List[ValDef],
+        span: Span
+    )(using Context): Tree =
+      val nameRef = Ident(name.toTermName).withSpan(span)
+
+      // Either `g` or `g[T1, ..., Tn]` depending on whether the def
+      // has type parameters.
+      val typedRef =
+        if typeParams.isEmpty then nameRef
+        else
+          val typeRefs: List[Tree] = typeParams.map(td => Ident(td.name).withSpan(span))
+          TypeApply(nameRef, typeRefs).withSpan(span)
+
+      // Build the term-level params and the call body. For nullary
+      // defs the body is the typed reference itself; we still wrap it
+      // in a `Function(Nil, _)` because PolyFunction requires a value
+      // paramlist on its inner Function (see `Parsers.makePolyFunction`).
+      val (freshValueParams, callBody) =
+        if clause.isEmpty then
+          (Nil, typedRef)
+        else
+          val params: List[ValDef] = clause.map { vd =>
+            ValDef(vd.name, vd.tpt, EmptyTree)
+              .withMods(Modifiers(Flags.Param))
+              .withSpan(span)
+          }
+          val argRefs: List[Tree] = params.map(p => Ident(p.name).withSpan(span))
+          (params, Apply(typedRef, argRefs).withSpan(span))
+
+      val termLambda = Function(freshValueParams, callBody).withSpan(span)
+
+      if typeParams.isEmpty then termLambda
       else
-        // Lambda parameters require the `Param` flag (see
-        // `untpd.makeParameter`), otherwise the typer rejects the
-        // ValDef as a top-level declaration.
-        val freshParams: List[ValDef] = clause.map { vd =>
-          ValDef(vd.name, vd.tpt, EmptyTree)
+        // Polymorphic case: wrap the term lambda in a PolyFunction.
+        val freshTypeParams: List[TypeDef] = typeParams.map { td =>
+          TypeDef(td.name, td.rhs)
             .withMods(Modifiers(Flags.Param))
             .withSpan(span)
         }
-        val argRefs: List[Tree] = freshParams.map(p => Ident(p.name).withSpan(span))
-        val body = Apply(Ident(name.toTermName).withSpan(span), argRefs).withSpan(span)
-        Function(freshParams, body).withSpan(span)
+        PolyFunction(freshTypeParams, termLambda).withSpan(span)
 
     private def buildBindVar(name: String, span: Span)(using Context): Tree =
       val bindFn = makeFqn("dotty.tools.repl.Eval.bindVar", span)

@@ -71,8 +71,9 @@ class EvalTypeAnnotate extends Phase:
 
     private def isEvalBindCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
+      val name = if sym != NoSymbol then sym.name.toString else ""
       sym != NoSymbol
-        && (sym.name.toString == "bind" || sym.name.toString == "bindVar")
+        && (name == "bind" || name == "bindVar" || name == "bindGiven")
         && sym.owner == EvalTypeAnnotate.evalModuleClass
   end BindAnnotator
 

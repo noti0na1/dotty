@@ -39,6 +39,11 @@ object Eval:
    *                     `VarCell` the eval body mutates and the call site
    *                     reads back from.
    *  @param isVar       true iff this represents a `var` capture.
+   *  @param isGiven     true iff this represents a `given` capture. The
+   *                     runtime emits given bindings as members of a
+   *                     `(using ...)` clause on the synthesised wrapper
+   *                     so `summon[T]` inside the eval body resolves
+   *                     against them.
    *  @param sourceType  the source-level Scala type the typer inferred
    *                     for this capture, e.g. `"Int"`, `"Int => Int"`,
    *                     `"List[Int]"`. The empty string is the sentinel
@@ -51,9 +56,13 @@ object Eval:
       val name: String,
       val value: Any,
       val isVar: Boolean,
+      val isGiven: Boolean,
       val sourceType: String
   ):
-    override def toString = s"Binding($name, $value, isVar=$isVar, sourceType=$sourceType)"
+    def this(name: String, value: Any, isVar: Boolean, sourceType: String) =
+      this(name, value, isVar, isGiven = false, sourceType)
+    override def toString =
+      s"Binding($name, $value, isVar=$isVar, isGiven=$isGiven, sourceType=$sourceType)"
 
   /** Mutable cell wrapping a captured `var`. We use the JDK's
    *  `AtomicReference` rather than a class of our own: JDK types are
@@ -92,6 +101,19 @@ object Eval:
 
   def bindVar(name: String, cell: VarCell[?], sourceType: String): Binding =
     new Binding(name, cell, isVar = true, sourceType)
+
+  /** Capture a `given` binding. The runtime evaluator emits these as
+   *  members of a `(using ...)` clause on the synthesised wrapper so
+   *  `summon[T]` inside the eval body resolves against them. The
+   *  binding is also reachable by name when it has one (named givens
+   *  like `given x: Int = 7`); anonymous givens use a synthesised
+   *  capture name and are only summonable.
+   */
+  def bindGiven(name: String, value: Any): Binding =
+    new Binding(name, value, isVar = false, isGiven = true, sourceType = "")
+
+  def bindGiven(name: String, value: Any, sourceType: String): Binding =
+    new Binding(name, value, isVar = false, isGiven = true, sourceType)
 
   /** Adapter installed by the running REPL driver. */
   trait Adapter:
@@ -163,12 +185,27 @@ object Eval:
       else classToTypeName(b.value.getClass)
     }
 
-    val params = bindings.iterator.zipWithIndex.map {
-      case (b, i) if b.isVar =>
+    // Split bindings into the regular positional clause and a trailing
+    // `using` clause for given bindings. Givens move to the using clause
+    // so `summon[T]` inside the eval body resolves against them. The
+    // wrapper compiles fine with an empty using clause, so we emit one
+    // unconditionally when any given is present.
+    val plainBindings = bindings.iterator.zipWithIndex.filter(!_._1.isGiven).toArray
+    val givenBindings = bindings.iterator.zipWithIndex.filter(_._1.isGiven).toArray
+
+    def renderParam(b: Binding, i: Int): String =
+      if b.isVar then
         s"`${b.name}__cell`: java.util.concurrent.atomic.AtomicReference[${bindingTypes(i)}]"
-      case (b, i) =>
+      else
         s"`${b.name}`: ${bindingTypes(i)}"
-    }.mkString(", ")
+
+    val plainClause = plainBindings.iterator.map((b, i) => renderParam(b, i)).mkString(", ")
+    val givenClause =
+      if givenBindings.isEmpty then ""
+      else
+        "(using " + givenBindings.iterator.map((b, i) => renderParam(b, i)).mkString(", ") + ")"
+
+    val params = s"($plainClause)$givenClause"
 
     // For var bindings, declare a body-local `var` initialised from the
     // cell, run the body, then write the local back to the cell. This
@@ -210,7 +247,7 @@ object Eval:
 
     val source =
       s"""${importBlock}object $wrapperName {
-         |  def __run__($params): Any = {
+         |  def __run__$params: Any = {
          |    $bodyBlock
          |  }
          |}
@@ -237,7 +274,12 @@ object Eval:
     val method = cls.getMethods.find(_.getName == "__run__").getOrElse(
       throw new RuntimeException("__run__ method not found in compiled wrapper")
     )
-    val args = bindings.map(_.value.asInstanceOf[AnyRef])
+    // Args must match the wrapper signature: regular params first,
+    // then the using-clause's given bindings (Method.invoke flattens
+    // both clauses into a single positional array).
+    val args =
+      (plainBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])
+        ++ givenBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])).toArray
     try method.invoke(module, args*)
     catch case e: java.lang.reflect.InvocationTargetException =>
       // Preserve the user-visible cause; reflection wraps it in an ITE
