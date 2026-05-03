@@ -23,6 +23,28 @@ private[repl] object EvalBodyPlaceholder:
   inline def Marker: String = EvalContext.placeholder
   def emit(body: String): String = s"({ $body })"
 
+/** The set of method names the eval pipeline recognises as call sites
+ *  it should rewrite/annotate. Shared between the parser-stage
+ *  [[EvalRewriter]] (which appends synthetic arguments) and the
+ *  post-typer [[EvalTypeAnnotate]] phase (which fills in the typed
+ *  expectedType / per-binding sourceType).
+ *
+ *    - `eval` / `evalSafe` are the throwing / non-throwing forms on
+ *      `Eval`. The post-typer phase additionally restricts these by
+ *      owner (`Eval.module-class`) — at parser stage we have no
+ *      symbols, so we match by name plus an enclosing `Eval.` qualifier.
+ *    - `agent` / `agentSafe` are special user-defined LLM-driven
+ *      generators sharing eval's synthetic-argument shape.
+ *      Both stages match them by name only; owner-restricting them
+ *      would defeat the very point of letting users plug in their own.
+ *
+ *  Adding a new helper means listing it here once.
+ */
+private[repl] object EvalNames:
+  val EvalLike: Set[String] = Set("eval", "evalSafe", "agent", "agentSafe")
+  val EvalOwned: Set[String] = Set("eval", "evalSafe")
+  val BindLike: Set[String] = Set("bind", "bindVar", "bindGiven")
+
 /** Parse-stage rewriter that augments each `eval(...)` call with
  *  `Eval.bind("name", name)` (or `Eval.bindVar("name", cell)` for
  *  mutable bindings) for every name introduced by an enclosing lambda,
@@ -336,9 +358,18 @@ object EvalRewriter:
      *  generators (`for x <- xs`, `for (a, b) <- xs`) and case-lambda /
      *  match patterns (`{ case (file, _) => ... }`, `case Some(x) => ...`).
      *  Recurses into the common pattern shapes the parser produces.
+     *
+     *  Per the Scala spec, a bare `Ident` is a *variable pattern* only
+     *  when its first character is a lower-case letter (or `_`); upper-
+     *  case-first `Ident` patterns are stable-identifier references
+     *  (e.g. `case None =>` doesn't bind `None`; it matches the value).
+     *  Treating those as binders would emit `Eval.bind("None", None)`,
+     *  which the eval driver rejects ("expected a type, found a term").
+     *  `Bind(name, _)` always introduces `name`, so it bypasses the
+     *  letter-case check.
      */
     private def extractPatNames(pat: Tree)(using Context): List[String] = pat match
-      case Ident(name) if name.toString.nonEmpty && name.toString != "_" =>
+      case Ident(name) if isVariablePatternName(name.toString) =>
         List(name.toString)
       case Bind(name, body) =>
         val n = name.toString
@@ -353,6 +384,12 @@ object EvalRewriter:
         // Each branch must bind the same names by Scala's rules; pick from the first.
         trees.headOption.toList.flatMap(extractPatNames)
       case _ => Nil
+
+    private def isVariablePatternName(name: String): Boolean =
+      if name.isEmpty || name == "_" then false
+      else
+        val c = name.charAt(0)
+        c == '_' || c.isLower
 
     /** The class's type parameters, harvested from the primary
      *  constructor's first paramlist when it's a TypeDef list.
@@ -500,11 +537,17 @@ object EvalRewriter:
         untpd.cpy.ForDo(fd)(newEnums, newBody)
 
       // Lambda: its parameters become locals visible inside the body.
-      // Lambda parameters are always immutable.
+      // Lambda parameters are always immutable. Skip placeholder `_`
+      // and synthetic empty names (`(x, y) => ...` parses fine, but
+      // a pathological `(_, _) => ...` would otherwise emit
+      // `Eval.bind("_", _)` and fail to compile).
       case fn @ Function(args, body) =>
+        def captureName(n: String): Option[CapturedName] =
+          if n.isEmpty || n == "_" then None
+          else Some(CapturedName(n, isVar = false))
         val names = args.flatMap {
-          case vd: ValDef => Some(CapturedName(vd.name.toString, isVar = false))
-          case Ident(n)   => Some(CapturedName(n.toString, isVar = false))
+          case vd: ValDef => captureName(vd.name.toString)
+          case Ident(n)   => captureName(n.toString)
           case _ => None
         }
         val newArgs = args.mapConserve(transform)
@@ -520,16 +563,15 @@ object EvalRewriter:
       // scope across cases — each case is its own fresh binding frame.
       case mt @ Match(selector, cases) =>
         val newSelector = transform(selector)
-        val newCases = cases.mapConserve {
-          case cd @ CaseDef(pat, guard, body) =>
-            val patNames = extractPatNames(pat).map(n => CapturedName(n, isVar = false))
-            val newPat = transform(pat)
-            val newGuard = withScope(patNames)(transform(guard))
-            val newBody = withScope(patNames)(transform(body))
-            cpy.CaseDef(cd)(newPat, newGuard, newBody)
-          case other => transform(other)
+        val newCases = cases.mapConserve { cd =>
+          val CaseDef(pat, guard, body) = cd
+          val patNames = extractPatNames(pat).map(n => CapturedName(n, isVar = false))
+          val newPat = transform(pat)
+          val newGuard = withScope(patNames)(transform(guard))
+          val newBody = withScope(patNames)(transform(body))
+          cpy.CaseDef(cd)(newPat, newGuard, newBody)
         }
-        cpy.Match(mt)(newSelector, newCases.asInstanceOf[List[CaseDef]])
+        cpy.Match(mt)(newSelector, newCases)
 
       // Block: process stats in order, accumulating names from each
       // val/var/def/given so subsequent stats and the trailing
@@ -860,25 +902,24 @@ object EvalRewriter:
         case TopKind.Expression => s"val __unused__ : Any = { $withMarker }"
         case TopKind.Unknown => ""
 
+    /** Recognise an eval/agent call site at the parser stage.
+     *
+     *  We have no symbols yet, so this is a purely name-based match
+     *  against [[EvalNames.EvalLike]] with the additional restriction
+     *  that any qualifier must be a path ending in `Eval` (so plain
+     *  `eval(...)`, `Eval.eval(...)`, and `dotty.tools.repl.Eval.eval(...)`
+     *  match, but `Foo.eval(...)` does not). The post-typer phase
+     *  [[EvalTypeAnnotate]] redoes this check using symbol owners,
+     *  which is more precise; the two passes still agree because the
+     *  post-typer pattern only fires on calls already carrying the
+     *  rewriter's synthetic arguments.
+     */
     private def isEvalCall(fn: Tree): Boolean = fn match
-      case Ident(n) => isEvalName(n.toString)
-      case Select(qual, n) => isEvalName(n.toString) && isEvalQualifier(qual)
+      case Ident(n) => EvalNames.EvalLike(n.toString)
+      case Select(qual, n) => EvalNames.EvalLike(n.toString) && isEvalQualifier(qual)
       // `eval[T](...)` desugars to `Apply(TypeApply(Ident("eval"), ...), ...)`.
       case TypeApply(inner, _) => isEvalCall(inner)
       case _ => false
-
-    private def isEvalName(name: String): Boolean =
-      // `eval` / `evalSafe` are the throwing / non-throwing forms.
-      // `agent` / `agentSafe` are LLM-driven generators (defined in
-      // user code, e.g. LLMChat.scala) that share the same
-      // synthetic-argument shape: bindings, expectedType,
-      // enclosingSource, enclosingTypeParams. The rewriter treats
-      // them identically — capturing the same context — so the
-      // user's `agent[T]("task")` call gets the same binding /
-      // source / type-param info appended that an `eval[T](code)`
-      // call would.
-      name == "eval" || name == "evalSafe" ||
-      name == "agent" || name == "agentSafe"
 
     private def isEvalQualifier(t: Tree): Boolean = t match
       case Ident(n) => n.toString == "Eval"

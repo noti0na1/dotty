@@ -1292,6 +1292,77 @@ class DynamicEvalTests extends ReplTest:
     assertContains("var sum: Int = 15", storedOutput())
   }
 
+  @Test def nestedEvalAfterTypeAnnotatedVal = initially {
+    // Regression: when the outer eval body contained any
+    // `AppliedTypeTree` (`List[T]`, `Array[T]`, type-annotated val,
+    // etc.), the runtime nested-eval rewrite path went through
+    // dotty's pretty-printer, which references `defn.orType` while
+    // rendering applied-type trees. Without a fully-initialised
+    // `ContextBase` (and a real classpath), that lookup NPEs and the
+    // catch-NonFatal in `rewriteUserCode` silently dropped the
+    // rewrite, so the inner eval received `enclosingSource = ""` and
+    // no bindings. The visible symptom in agent traces was an inner
+    // agent referencing an outer-body local that then failed the
+    // wrapper compile because the binding wasn't injected.
+    val body =
+      "val xs: List[Int] = List(1, 2, 3); " +
+      "val n: Int = xs.sum; " +
+      "eval[Int](\\\"n + 100\\\")"
+    run(s"""val r: Int = eval[Int]("$body")""")
+    val out = storedOutput()
+    assertTrue(s"no compile failure expected, got:\n$out",
+      !out.contains("eval failed to compile"))
+    assertContains("val r: Int = 106", out)
+  }
+
+  @Test def nestedEvalInsideNestedBlocksAndTryCatch = initially {
+    // Regression for the agent-trace symptom "the start of this line
+    // does not match any of the previous indentation widths". The
+    // outer eval body had nested if/else/blocks/try-catch and a def
+    // body; the dotty pretty-printer emitted brace-balanced output
+    // whose leading-whitespace widths fell *between* the parser's
+    // indentation stack entries (e.g. a 17-space line where only 16
+    // and 18 were established). Under the indent-significant default
+    // the round-trip parse rejected the output and `rewriteUserCode`
+    // silently fell back. Forcing `-no-indent` for the round-trip
+    // parse makes braces authoritative and the rewrite survives.
+    val body =
+      "val baseDir = new java.io.File(\\\".\\\"); " +
+      "def listOne(d: java.io.File): List[java.io.File] = { " +
+      "  val es = d.listFiles; " +
+      "  if (es == null) Nil " +
+      "  else es.toList.filter(_.getName.endsWith(\\\".txt\\\")) " +
+      "}; " +
+      "val files = listOne(baseDir); " +
+      "val n = try { files.length } catch { case _: Exception => -1 }; " +
+      "eval[Int](\\\"n + 1000\\\")"
+    run(s"""val r: Int = eval[Int]("$body")""")
+    val out = storedOutput()
+    assertTrue(s"no compile failure expected, got:\n$out",
+      !out.contains("eval failed to compile"))
+    assertTrue(s"no rewrite-fallback warning expected, got:\n$out",
+      !out.contains("[eval-rewrite] WARNING"))
+  }
+
+  @Test def nestedEvalInsideTryFinallyNoCatch = initially {
+    // Regression: an outer eval body containing `try { ... eval(...) }
+    // finally { ... }` (no catch clause) used to round-trip through
+    // the pretty-printer as `try { ... } catch {<empty>} finally
+    // { ... }`, which fails to re-parse and silently rolls the rewrite
+    // back. The agent-trace symptom is that the inner eval's
+    // enclosingSource and bindings are dropped: captured outer-body
+    // locals (`x` here) become unresolved at the inner wrapper compile.
+    val body =
+      "val x = 7; " +
+      "val src = scala.io.Source.fromString(\\\"dummy\\\"); " +
+      "try eval[Int](\\\"x + 100\\\") finally src.close()"
+    run(s"""val r: Int = eval[Int]("$body")""")
+    val out = storedOutput()
+    assertTrue(s"no compile failure expected, got:\n$out",
+      !out.contains("eval failed to compile"))
+    assertContains("val r: Int = 107", out)
+  }
+
   @Test def bodyTryCatchFinally = initially {
     // try/catch with multiple cases plus a finally that mutates an
     // outer var. Tests both exception-handling path selection AND
@@ -2196,6 +2267,90 @@ class DynamicEvalAgentApiTests extends ReplTest:
             |println("f(10) = " + f(10))""".stripMargin
       )
       assertContains("f(10) = 11", storedOutput())
+    }
+
+  @Test def evalSafeRetryInsideNestedBodyKeepsChainedContext =
+    // Models a retry loop *inside* an outer eval body. The outer body
+    // declares `val x` and then calls `evalSafe` twice (the second
+    // call is the "retry" after the first compile-failed). Both
+    // evalSafe calls must see the chained context (def signature +
+    // outer body's `val x`); the second call's bindings additionally
+    // include `r1`, the val sitting between the two calls in the same
+    // block. Verifies that running through the rewriter twice (once
+    // for outer parsing, once for nested-body rewriting) doesn't
+    // collapse the chain on the retry.
+    initially {
+      val q3 = "\"\"\""
+      val innerBody =
+        s"""${q3}val x = 5
+           |    val r1 = evalSafe[Int] { (ctx1: dotty.tools.repl.EvalContext) =>
+           |      assert(ctx1.bindings.map(_.name).toSet == Set("x", "i"),
+           |        "first attempt should see [x, i]")
+           |      assert(ctx1.enclosingSource.contains("val x = 5"),
+           |        "first attempt should see outer-body `val x = 5`")
+           |      "definitelyMissingSym + 1"
+           |    }
+           |    if r1.isSuccess then r1.get
+           |    else evalSafe[Int] { (ctx2: dotty.tools.repl.EvalContext) =>
+           |      assert(ctx2.bindings.map(_.name).toSet == Set("r1", "x", "i"),
+           |        "retry sits below `val r1` so its bindings include r1, x, i")
+           |      assert(ctx2.enclosingSource.contains("val x = 5"),
+           |        "retry should ALSO see outer-body `val x = 5`")
+           |      "x + i"
+           |    }.get${q3}""".stripMargin
+      run(
+        s"""|import dotty.tools.repl.{EvalContext, EvalResult}
+            |def f(i: Int): Int =
+            |  eval[Int] { (outerCtx: EvalContext) =>
+            |    $innerBody
+            |  }
+            |println("f(10) = " + f(10))""".stripMargin
+      )
+      assertContains("f(10) = 15", storedOutput())
+    }
+
+  @Test def closureFormInNestedEvalSeesOuterBodyValAndChainedSource =
+    // Models the user's nested-agent retry scenario:
+    //   def f(i: Int) = eval(...)
+    // where the outer eval's generated body itself declares `val x`
+    // and then contains a nested eval. The runtime nested-eval
+    // rewriter must:
+    //   * inject BOTH `i` (outer) and `x` (outer-body local) as
+    //     bindings on the inner call.
+    //   * splice the outer body (with the inner call's location
+    //     replaced by a marker) into the outer enclosingSource's
+    //     marker slot, so the inner closure sees the full chain
+    //     `def f(i: Int) = ({ val x = ...; __placeholder__ })`.
+    //   * let the inner body reference both `x` and `i` so the
+    //     wrapper signature has both as parameters.
+    // String-interpolation in the inner body is avoided per the
+    // existing test's comment about the pretty-printer round-trip.
+    initially {
+      val q3 = "\"\"\""
+      val innerBody =
+        s"""${q3}val x = 5
+           |    eval[Int] { (innerCtx: dotty.tools.repl.EvalContext) =>
+           |      assert(innerCtx.bindings.map(_.name).toSet == Set("x", "i"),
+           |        "inner should capture both `x` and `i`")
+           |      assert(innerCtx.enclosingSource.contains("def f(i: Int)"),
+           |        "inner enclosingSource should still carry the def signature")
+           |      assert(innerCtx.enclosingSource.contains("val x = 5"),
+           |        "inner enclosingSource should include the outer body's `val x = 5`")
+           |      assert(innerCtx.enclosingSource.contains("({ "),
+           |        "inner enclosingSource should include the outer-body `({ ... })` wrapper")
+           |      "x + i"
+           |    }${q3}""".stripMargin
+      run(
+        s"""|import dotty.tools.repl.EvalContext
+            |def f(i: Int): Int =
+            |  eval[Int] { (outerCtx: EvalContext) =>
+            |    assert(outerCtx.bindings.map(_.name).toSet == Set("i"))
+            |    assert(outerCtx.enclosingSource.contains("def f(i: Int)"))
+            |    $innerBody
+            |  }
+            |println("f(10) = " + f(10))""".stripMargin
+      )
+      assertContains("f(10) = 15", storedOutput())
     }
 
 end DynamicEvalAgentApiTests

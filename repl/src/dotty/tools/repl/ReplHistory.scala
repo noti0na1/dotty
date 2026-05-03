@@ -6,18 +6,20 @@ import scala.util.control.NonFatal
 /** Per-line transcript writer for the REPL.
  *
  *  When the user passes `-Xrepl-history-file:<path>`, the driver wraps
- *  each line's interpretation in [[captureLine]] which:
+ *  each line's interpretation in [[captureLine]], which tees the REPL's
+ *  output stream into a per-line buffer for the duration of that line
+ *  and then appends an entry of the form:
  *
- *    1. Tees the REPL's output stream and `System.out`/`System.err`
- *       into a per-line buffer for the duration of the line.
- *    2. After the line completes, appends an entry to the configured
- *       file in transcript form:
+ *      scala> <input>
+ *      <output>
  *
- *           scala> <input>
- *           <output>
+ *      scala> <next input>
+ *      ...
  *
- *           scala> <next input>
- *           ...
+ *  The driver already redirects `System.out`/`System.err` through the
+ *  same tee in `withRedirectedOutput`, so user `println`s land in the
+ *  buffer without a second redirection layer. (If `redirectOutput` is
+ *  off, the file records only what the driver itself prints.)
  *
  *  No global mutable state lives in this module; the file IS the
  *  history. A reader (typically an `agent[T]` body that wants to
@@ -37,13 +39,17 @@ import scala.util.control.NonFatal
 object ReplHistory:
 
   /** Run `work`, capturing everything written to `tee` (the REPL
-   *  driver's `out` stream) AND `System.out` / `System.err`, then
-   *  append a transcript entry to `historyFile` if the path is
-   *  non-empty.
+   *  driver's `out` stream) for the duration, then append a transcript
+   *  entry to `historyFile` if the path is non-empty.
    *
-   *  When `historyFile` is empty, work runs untouched (no tee
-   *  installation, no system-stream redirection): the no-flag path
-   *  has zero overhead.
+   *  We rely on the driver's own `withRedirectedOutput` having already
+   *  pointed `System.out` / `System.err` at `tee` for user prints to
+   *  reach the capture too. When the driver's `redirectOutput` is
+   *  disabled, this records only diagnostics the driver itself emits
+   *  (definitions, error messages); user `println`s would go elsewhere.
+   *
+   *  When `historyFile` is empty, work runs untouched (no capture
+   *  installation): the no-flag path has zero overhead.
    */
   private[repl] def captureLine[A](
       tee: TeePrintStream,
@@ -52,24 +58,9 @@ object ReplHistory:
   )(work: => A): A =
     if historyFile.isEmpty then return work
 
-    val origOut = System.out
-    val origErr = System.err
     val buf = new java.io.ByteArrayOutputStream
-    val sysTee = teeStream(buf, origOut)
-    val redirected =
-      try
-        System.setOut(sysTee)
-        System.setErr(sysTee)
-        true
-      catch case NonFatal(_) => false
-    try
-      tee.withCapture(buf)(work)
-    finally
-      if redirected then
-        try System.setOut(origOut) catch case NonFatal(_) => ()
-        try System.setErr(origErr) catch case NonFatal(_) => ()
-      try sysTee.flush() catch case NonFatal(_) => ()
-      append(historyFile, input, buf.toString)
+    try tee.withCapture(buf)(work)
+    finally append(historyFile, input, buf.toString)
 
   /** Append one transcript entry to `path`. Skipped silently when both
    *  `input` and `output` are empty (e.g. blank line) or when I/O
@@ -94,25 +85,21 @@ object ReplHistory:
           w.write("\n")
         w.write("\n")
       finally w.close()
-    catch case NonFatal(_) => ()
+    catch case NonFatal(e) =>
+      // Surface the cause (typically a permissions / disk-full
+      // problem) once instead of silently dropping every entry.
+      // We don't want a broken history file to crash the REPL.
+      System.err.println(
+        s"[repl-history] WARNING: failed to append to '$path': " +
+        s"${e.getClass.getSimpleName}: ${e.getMessage}")
 
-  private def teeStream(
-      capture: java.io.OutputStream,
-      forward: java.io.PrintStream
-  ): java.io.PrintStream =
-    val raw = new java.io.OutputStream:
-      override def write(b: Int): Unit =
-        capture.write(b)
-        forward.write(b)
-      override def write(b: Array[Byte], off: Int, len: Int): Unit =
-        capture.write(b, off, len)
-        forward.write(b, off, len)
-      override def flush(): Unit = forward.flush()
-    new java.io.PrintStream(raw, /* autoFlush = */ true)
-
-  private val ansi = java.util.regex.Pattern.compile("\\[[0-9;]*m")
+  // ANSI escape: ESC[<digits/semicolons>m. The driver might emit
+  // colored output even with `-color:never` (some message-rendering
+  // paths re-apply highlighting), so we always strip on the way
+  // to the file. The `\u001b` in the pattern is a literal ESC.
+  private val ansi = java.util.regex.Pattern.compile("\u001b\\[[0-9;]*m")
   private def stripAnsi(s: String): String =
-    if s.indexOf('') < 0 then s
+    if s.indexOf('\u001b') < 0 then s
     else ansi.matcher(s).replaceAll("")
 
   /** A `PrintStream` that forwards to a primary destination and, when
@@ -138,13 +125,19 @@ object ReplHistory:
       super.write(b)
       val c = capture
       if c != null then
-        try c.write(b) catch case NonFatal(_) => ()
+        try c.write(b) catch case NonFatal(e) =>
+          System.err.println(
+            s"[repl-history] WARNING: failed to write to capture buffer: " +
+            s"${e.getClass.getSimpleName}: ${e.getMessage}")
 
     override def write(b: Array[Byte], off: Int, len: Int): Unit =
       super.write(b, off, len)
       val c = capture
       if c != null then
-        try c.write(b, off, len) catch case NonFatal(_) => ()
+        try c.write(b, off, len) catch case NonFatal(e) =>
+          System.err.println(
+            s"[repl-history] WARNING: failed to write to capture buffer: " +
+            s"${e.getClass.getSimpleName}: ${e.getMessage}")
   end TeePrintStream
 
 end ReplHistory

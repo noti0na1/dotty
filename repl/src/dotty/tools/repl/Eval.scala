@@ -3,13 +3,17 @@ package repl
 
 import scala.util.control.NonFatal
 
+import dotc.ast.untpd
 import dotc.Driver
 import dotc.classpath.ClassPathFactory
 import dotc.core.Contexts.{Context, ContextBase, inContext}
+import dotc.core.Decorators.toTermName
 import dotc.core.Symbols.defn
 import dotc.core.SymbolLoaders
 import dotc.reporting.StoreReporter
 import dotc.util.ClasspathFromClassloader
+import dotc.parsing.Parsers.Parser
+import dotc.util.SourceFile
 import io.{AbstractFile, AbstractFileClassLoader, ClassPath, VirtualDirectory}
 
 /** Runtime `eval` for the dotty REPL.
@@ -59,8 +63,10 @@ object Eval:
       val isGiven: Boolean,
       val sourceType: String
   ):
+    /** Convenience for the common non-given case. */
     def this(name: String, value: Any, isVar: Boolean, sourceType: String) =
       this(name, value, isVar, isGiven = false, sourceType)
+
     override def toString =
       s"Binding($name, $value, isVar=$isVar, isGiven=$isGiven, sourceType=$sourceType)"
 
@@ -415,12 +421,13 @@ object Eval:
         s"    `${b.name}__cell`.set(`${b.name}`)"
     }.mkString("\n")
 
-    // Always import `Eval.eval` so the body itself can call `eval(...)`,
-    // i.e. nested evals work. (The REPL's own ReplCompiler injects this
-    // import into every user-line wrapper for the same reason.)
-    val evalImport = "import dotty.tools.repl.Eval.eval\n"
+    // Always import `Eval.{eval, evalSafe}` so the body itself can call
+    // either form unqualified — nested evals (and nested evalSafe-based
+    // retries) work. The REPL's own ReplCompiler injects the matching
+    // import into every user-line wrapper for the same reason.
+    val evalImport = "import dotty.tools.repl.Eval.{eval, evalSafe}\n"
     val importBlock =
-      if replWrapperImports.length == 0 then evalImport
+      if replWrapperImports.isEmpty then evalImport
       else evalImport + replWrapperImports.mkString("", "\n", "\n")
 
     // Run the rewriter on the user's code so any nested `eval(...)`
@@ -436,13 +443,21 @@ object Eval:
     // This way the inner verification compile reconstructs the full
     // original lexical context — def, outer body, inner body — and
     // capture-checks them as one source.
-    val rewrittenCode0 = rewriteUserCode(code, bindings, enclosingSource, enclosingTypeParams)
+    val rewrittenCode0 = rewriteUserCode(code, bindings, enclosingSource, enclosingTypeParams, classLoader)
     // For eval calls inside class methods, the rewriter captured a
     // synthetic `__this__` binding pointing at the outer instance.
     // Rewrite `this.<x>` references in the body to `__this__.<x>` so
     // the user's natural `this.` syntax accesses the outer fields
     // instead of the wrapper module's (empty) `this`.
-    val rewrittenCode = rewriteThisInBody(rewrittenCode0, bindings)
+    val rewrittenCode = rewriteThisInBody(rewrittenCode0, bindings, classLoader)
+    // True iff *either* rewrite actually changed the body. Used below
+    // to gate the `-no-indent` flag for the wrapper compile: the
+    // pretty-printer's output isn't safe under indent-significant
+    // parsing, but the user's original code might be (intentionally
+    // indent-only Scala 3). Comparing by identity / equality is enough
+    // because `rewriteUserCode` and `rewriteThisInBody` both early-
+    // return the input string when they don't apply.
+    val bodyWasRewritten = (rewrittenCode ne code)
 
     // Pin the wrapper's return type to the caller's `T` when we have it.
     // The body then type-checks against `T` and a mismatch surfaces as a
@@ -477,7 +492,7 @@ object Eval:
          |}
          |""".stripMargin
 
-    compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
+    compileSource(source, classLoader, outDir, replOutDir, compilerSettings, forceNoIndent = bodyWasRewritten) match
       case Left(errs) =>
         val failure = new CompileFailure(errs.toArray, source)
         if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, failure)
@@ -542,7 +557,15 @@ object Eval:
       java.nio.file.Files.writeString(srcFile.toPath, enclosingSource)
       java.nio.file.Files.writeString(codeFile.toPath, code)
       ts
-    catch case NonFatal(_) => ""
+    // Logging is best-effort: an IO error here must not fail the user's
+    // eval call. We still surface the cause to stderr so it can be
+    // diagnosed (a permissions problem on the log dir, e.g.) rather
+    // than silently dropping every entry.
+    catch case NonFatal(e) =>
+      System.err.println(
+        s"[eval-log] WARNING: failed to write log files under '$evalLogDir': " +
+        s"${e.getClass.getSimpleName}: ${e.getMessage}")
+      ""
 
   /** Write `eval_<timestamp>_error.scala` carrying the diagnostic
    *  text and the synthesised source the eval driver was trying to
@@ -563,7 +586,10 @@ object Eval:
       sb ++= "\n// generated source:\n"
       sb ++= failure.source
       java.nio.file.Files.writeString(errFile.toPath, sb.toString)
-    catch case NonFatal(_) => ()
+    catch case NonFatal(e) =>
+      System.err.println(
+        s"[eval-log] WARNING: failed to write error log under '$evalLogDir': " +
+        s"${e.getClass.getSimpleName}: ${e.getMessage}")
 
   /** Whether the live REPL session has capture checking enabled (via a
    *  `-language:experimental.captureChecking` CLI flag). The
@@ -603,7 +629,7 @@ object Eval:
     val verifyName = s"__EvalVerify_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
     val evalImport = "import dotty.tools.repl.Eval.eval\n"
     val importBlock =
-      if replWrapperImports.length == 0 then evalImport
+      if replWrapperImports.isEmpty then evalImport
       else evalImport + replWrapperImports.mkString("", "\n", "\n")
     val source =
       s"""${importBlock}object $verifyName {
@@ -611,7 +637,10 @@ object Eval:
          |}
          |""".stripMargin
     val outDir = new VirtualDirectory("<eval-verify>")
-    compileSource(source, classLoader, outDir, replOutDir, compilerSettings) match
+    // The verify pass splices the *original* user body source into
+    // the original lexical context — no pretty-printer involved — so
+    // we keep indent-significant parsing as-is.
+    compileSource(source, classLoader, outDir, replOutDir, compilerSettings, forceNoIndent = false) match
       case Left(errs) =>
         Some(new CompileFailure(errs.toArray, source))
       case Right(()) =>
@@ -713,28 +742,81 @@ object Eval:
    *  the body looks like it contains a nested `eval(...)` call, and we
    *  fall back to the original code if the rewritten form fails to
    *  re-parse.
+   *
+   *  The Context for parsing/printing must have its base initialized
+   *  before use: `RefinedPrinter` references `defn.orType` while
+   *  rendering any `AppliedTypeTree` (`List[T]`, `Array[T]`, etc.) and
+   *  that lookup throws an NPE when `ContextBase.initialize()` hasn't
+   *  run, which the catch below would silently swallow as a rollback.
+   *  Initialising in turn requires a real classpath: we derive it
+   *  from the running REPL session's `classLoader` (the same
+   *  derivation `EvalDriver` does for the wrapper compile).
+   *
+   *  Without that initialisation, the very common case of a body
+   *  containing a type-annotated def like `def f(x: X): List[Y]`
+   *  would lose its rewrite and the inner eval would see an empty
+   *  `enclosingSource`.
    */
   private def rewriteUserCode(
       code: String,
       bindings: Array[Binding],
       outerEnclosingSource: String,
-      outerEnclosingTypeParams: String
+      outerEnclosingTypeParams: String,
+      classLoader: ClassLoader
   ): String =
     if !mightContainNestedEval(code) then return code
-    val ctxBase = new ContextBase
-    val ctx0 = ctxBase.initialCtx
-    // Disable colors so `tree.show` round-trips through the parser
-    // without ANSI escape sequences confusing it.
-    val ctx = ctx0.fresh.setSetting(ctx0.settings.color, "never")
+    val ctx = makeRewriteContext(classLoader)
     val initialScope: Array[(String, Boolean)] =
       bindings.map(b => (b.name, b.isVar))
-    try
-      val rewritten = EvalRewriter.rewriteCode(
-        code, initialScope, outerEnclosingSource, outerEnclosingTypeParams
-      )(using ctx)
-      if isParseable(rewritten)(using ctx) then rewritten else code
-    catch case NonFatal(_) =>
+    val rewritten = EvalRewriter.rewriteCode(
+      code, initialScope, outerEnclosingSource, outerEnclosingTypeParams
+    )(using ctx)
+    // The only "expected" failure mode is the pretty-printer's output
+    // not surviving a parser round-trip. That falls back to the
+    // original code without alarm. Anything else (a thrown exception
+    // from parse / transform / show) is a bug we want to surface, so
+    // we deliberately don't catch — the silent fallback used to mask
+    // a real NPE in the printer for an embarrassingly long time.
+    val parseErrors = parseDiagnostics(rewritten)(using ctx)
+    if parseErrors.isEmpty then rewritten
+    else
+      reportRewriteFallback(
+        "rewritten body did not re-parse",
+        "nested eval calls inside this body will not see captured bindings or chained enclosing source",
+        rewritten,
+        parseErrors
+      )
       code
+
+  /** Build a fully-initialised Context suitable for parsing and
+   *  pretty-printing untyped trees inside the runtime rewrite path.
+   *  See `rewriteUserCode` for why initialisation is load-bearing.
+   *
+   *  We force `-no-indent` so the parser treats braces as authoritative
+   *  and ignores indentation widths. Dotty's pretty-printer emits
+   *  brace-balanced Scala but its leading-whitespace widths are *not*
+   *  guaranteed to satisfy the indent-significant parser (the printer
+   *  routinely produces a line at 17 spaces when only 16 and 18 are in
+   *  the indentation stack, which the parser rejects with "the start of
+   *  this line does not match any of the previous indentation widths"
+   *  even though the braces match perfectly). Disabling indent rules is
+   *  exactly the trade we want: the printer emits braces, the parser
+   *  trusts braces. With this set, the round-trip succeeds for bodies
+   *  that previously fell back to the unrewritten original.
+   */
+  private def makeRewriteContext(classLoader: ClassLoader): Context =
+    val ctxBase = new ContextBase
+    val ctx0 = ctxBase.initialCtx
+    val ctx = ctx0.fresh
+      .setSetting(ctx0.settings.color, "never")
+      .setSetting(ctx0.settings.noindent, true)
+    val cp = ClasspathFromClassloader(classLoader)
+    val sysCp = Option(System.getProperty("java.class.path")).getOrElse("")
+    val sep = java.io.File.pathSeparator
+    val combined = Seq(cp, sysCp).filter(_.nonEmpty).mkString(sep)
+    ctx.settings.classpath.update(combined)(using ctx)
+    ctxBase.initialize()(using ctx)
+    ctx
 
   private def mightContainNestedEval(code: String): Boolean =
     val names = Array("eval", "evalSafe", "agent", "agentSafe")
@@ -765,7 +847,7 @@ object Eval:
    *  the pretty-printer round-trip can't be re-parsed (per EVAL.md
    *  "Pretty-printer round-trip in nested eval"; same caveat).
    */
-  private def rewriteThisInBody(code: String, bindings: Array[Binding]): String =
+  private def rewriteThisInBody(code: String, bindings: Array[Binding], classLoader: ClassLoader): String =
     val needsRewrite = bindings.exists(_.name == "__this__")
     if !needsRewrite || !code.contains("this") then return code
     val memberFieldNames: Set[String] =
@@ -778,73 +860,117 @@ object Eval:
         .map(_.name)
         .filter(n => n.startsWith("__this__") && n != "__this__")
         .toSet
-    val ctxBase = new ContextBase
-    val ctx0 = ctxBase.initialCtx
-    val ctx = ctx0.fresh.setSetting(ctx0.settings.color, "never")
-    try
-      import dotty.tools.dotc.parsing.Parsers.Parser
-      import dotty.tools.dotc.util.SourceFile
-      import dotty.tools.dotc.ast.untpd
-      import dotty.tools.dotc.core.Decorators.toTermName
-      val source = SourceFile.virtual("<eval-body>", code)
-      val parser = new Parser(source)(using ctx)
-      val tree = parser.block()
-      val mapper = new untpd.UntypedTreeMap:
-        var localTemplateDepth = 0
-        override def transform(t: untpd.Tree)(using Context): untpd.Tree = t match
-          case td: untpd.TypeDef if td.rhs.isInstanceOf[untpd.Template] =>
-            localTemplateDepth += 1
-            try super.transform(t) finally localTemplateDepth -= 1
-          case sel @ untpd.Select(thisTree: untpd.This, name) if localTemplateDepth == 0 =>
-            val nameStr = name.toString
-            val fieldName = s"${nameStr}__field"
-            val qualName = thisTree.qual match
-              case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
-              case _ => ""
-            // Prefer the `<x>__field` binding whenever it exists,
-            // regardless of whether `this` is qualified. The
-            // `__field` binding is cell-backed for var members so
-            // writes propagate via sync-back. Routing through
-            // `__this__<Class>.x` instead would mutate the outer
-            // instance directly, which collides with the cell's
-            // sync-back overwriting it. We accept the limitation
-            // that name collisions across nested-class members
-            // shadow innermost-wins.
-            if memberFieldNames.contains(fieldName) then
-              untpd.Ident(fieldName.toTermName).withSpan(sel.span)
-            else if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
-              untpd.Select(
-                untpd.Ident(s"__this__$qualName".toTermName).withSpan(sel.span),
-                name.toTermName
-              ).withSpan(sel.span)
-            else
-              // Fall back to the innermost __this__.
-              untpd.Select(
-                untpd.Ident("__this__".toTermName).withSpan(sel.span),
-                name.toTermName
-              ).withSpan(sel.span)
-          case thisTree: untpd.This if localTemplateDepth == 0 =>
-            val qualName = thisTree.qual match
-              case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
-              case _ => ""
-            val targetName =
-              if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
-                s"__this__$qualName"
-              else "__this__"
-            untpd.Ident(targetName.toTermName).withSpan(t.span)
-          case _ => super.transform(t)
-      val rewritten = mapper.transform(tree)(using ctx).show(using ctx)
-      if isParseable(rewritten)(using ctx) then rewritten else code
-    catch case NonFatal(_) =>
+    val ctx = makeRewriteContext(classLoader)
+    val source = SourceFile.virtual("<eval-body>", code)
+    val parser = new Parser(source)(using ctx)
+    val tree = parser.block()
+    val mapper = new untpd.UntypedTreeMap:
+      var localTemplateDepth = 0
+      override def transform(t: untpd.Tree)(using Context): untpd.Tree = t match
+        case td: untpd.TypeDef if td.rhs.isInstanceOf[untpd.Template] =>
+          localTemplateDepth += 1
+          try super.transform(t) finally localTemplateDepth -= 1
+        case sel @ untpd.Select(thisTree: untpd.This, name) if localTemplateDepth == 0 =>
+          val nameStr = name.toString
+          val fieldName = s"${nameStr}__field"
+          val qualName = thisTree.qual match
+            case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
+            case _ => ""
+          // Prefer the `<x>__field` binding whenever it exists,
+          // regardless of whether `this` is qualified. The
+          // `__field` binding is cell-backed for var members so
+          // writes propagate via sync-back. Routing through
+          // `__this__<Class>.x` instead would mutate the outer
+          // instance directly, which collides with the cell's
+          // sync-back overwriting it. We accept the limitation
+          // that name collisions across nested-class members
+          // shadow innermost-wins.
+          if memberFieldNames.contains(fieldName) then
+            untpd.Ident(fieldName.toTermName).withSpan(sel.span)
+          else if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
+            untpd.Select(
+              untpd.Ident(s"__this__$qualName".toTermName).withSpan(sel.span),
+              name.toTermName
+            ).withSpan(sel.span)
+          else
+            // Fall back to the innermost __this__.
+            untpd.Select(
+              untpd.Ident("__this__".toTermName).withSpan(sel.span),
+              name.toTermName
+            ).withSpan(sel.span)
+        case thisTree: untpd.This if localTemplateDepth == 0 =>
+          val qualName = thisTree.qual match
+            case ident: untpd.Ident if ident.name.toString.nonEmpty => ident.name.toString
+            case _ => ""
+          val targetName =
+            if qualName.nonEmpty && qualifiedThisNames.contains(s"__this__$qualName") then
+              s"__this__$qualName"
+            else "__this__"
+          untpd.Ident(targetName.toTermName).withSpan(t.span)
+        case _ => super.transform(t)
+    val rewritten = mapper.transform(tree)(using ctx).show(using ctx)
+    // Same policy as `rewriteUserCode`: only swallow the
+    // round-trip-fail case; let any thrown exception propagate so it
+    // can be diagnosed.
+    val parseErrors = parseDiagnostics(rewritten)(using ctx)
+    if parseErrors.isEmpty then rewritten
+    else
+      reportRewriteFallback(
+        "rewritten body (this-references) did not re-parse",
+        "references to outer-class members from inside the eval body may fail to resolve",
+        rewritten,
+        parseErrors
+      )
       code
 
-  private def isParseable(code: String)(using Context): Boolean =
-    try
-      val source = dotty.tools.dotc.util.SourceFile.virtual("<verify>", code)
-      val parser = new dotty.tools.dotc.parsing.Parsers.Parser(source)
-      parser.block()
-      true
-    catch case NonFatal(_) => false
+  /** Parse `code` under a fresh reporter and return any syntax errors
+   *  the parser collected. An empty list means the input parsed clean.
+   *  The parser reports syntax errors through the reporter rather than
+   *  throwing, so we install a `StoreReporter` and read accumulated
+   *  errors out — a real "what's wrong with this" answer rather than a
+   *  yes/no the caller can't act on.
+   */
+  private def parseDiagnostics(code: String)(using outer: Context): Seq[String] =
+    val source = dotty.tools.dotc.util.SourceFile.virtual("<verify>", code)
+    val storeReporter = new StoreReporter(null)
+    val ctx = outer.fresh.setReporter(storeReporter)
+    val parser = new dotty.tools.dotc.parsing.Parsers.Parser(source)(using ctx)
+    parser.block()
+    if storeReporter.hasErrors then
+      storeReporter.removeBufferedMessages(using ctx).map(_.message)
+    else Nil
+
+  /** Print a warning explaining why the rewriter fell back to the
+   *  original code. Includes the parser diagnostics and a numbered
+   *  excerpt of the offending source so the caller can match the
+   *  error position to a line.
+   */
+  private def reportRewriteFallback(
+      summary: String,
+      consequence: String,
+      rewritten: String,
+      diagnostics: Seq[String]
+  ): Unit =
+    val sb = new StringBuilder
+    sb ++= "[eval-rewrite] WARNING: " ++= summary ++= "; falling back to the original ("
+    sb ++= consequence ++= ").\n"
+    sb ++= "  parse errors:\n"
+    diagnostics.foreach { d =>
+      sb ++= "    "
+      sb ++= d.replace("\n", "\n    ")
+      sb ++= "\n"
+    }
+    sb ++= "  rewritten source:\n"
+    val lines = rewritten.linesIterator.toArray
+    val width = lines.length.toString.length
+    lines.zipWithIndex.foreach { (line, i) =>
+      sb ++= "    "
+      sb ++= String.format(s"%${width}d", (i + 1): Integer)
+      sb ++= " | "
+      sb ++= line
+      sb ++= "\n"
+    }
+    System.err.print(sb.toString)
 
   /** Classloader for the eval-output VirtualDirectory. Overrides
    *  `loadClass(name, resolve)` (the entry point JVM-internal
@@ -913,31 +1039,89 @@ object Eval:
       }
   end EvalCompiler
 
-  private class EvalDriver(classLoader: ClassLoader) extends Driver:
+  private class EvalDriver extends Driver:
     override def sourcesRequired: Boolean = false
-
-    override def initCtx: Context =
-      val ictx = (new ContextBase).initialCtx
-      val cp = ClasspathFromClassloader(classLoader)
-      val sysCp = Option(System.getProperty("java.class.path")).getOrElse("")
-      val sep = java.io.File.pathSeparator
-      val combined = Seq(cp, sysCp).filter(_.nonEmpty).mkString(sep)
-      ictx.settings.classpath.update(combined)(using ictx)
-      ictx
+    // Widen visibility so `compileSource` can pre-set the composed
+    // classpath on the fresh context before handing it to `setup()`.
+    override def initCtx: Context = super.initCtx
   end EvalDriver
+
+  /** Compose the eval driver's `-classpath` from three sources, with a
+   *  single update so the settings layer doesn't issue an "Option
+   *  -classpath was updated" warning for setting it twice:
+   *
+   *    - the value of any `-classpath` (or `-cp`) flag in
+   *      `compilerSettings` (forwarded from the REPL session),
+   *    - the running JVM's classloader chain (so eval can see classes
+   *      already loaded in this process — most importantly the scala
+   *      stdlib),
+   *    - `java.class.path` (a defensive fallback for environments
+   *      where the REPL's classloader isn't a URLClassLoader).
+   *
+   *  Returns the combined classpath value plus `compilerSettings`
+   *  with `-classpath`/`-cp` and its argument removed; the caller
+   *  passes the combined value to `Settings.classpath.update` and the
+   *  remaining args to `Driver.setup`.
+   */
+  private def composeClasspath(
+      compilerSettings: Array[String],
+      classLoader: ClassLoader
+  ): (String, Array[String]) =
+    val cliCp = extractClasspathArg(compilerSettings)
+    val cp = ClasspathFromClassloader(classLoader)
+    val sysCp = Option(System.getProperty("java.class.path")).getOrElse("")
+    val sep = java.io.File.pathSeparator
+    val combined = (cliCp.toSeq ++ Seq(cp, sysCp)).filter(_.nonEmpty).mkString(sep)
+    val filtered = stripClasspathFlag(compilerSettings)
+    (combined, filtered)
+
+  /** Find the first `-classpath`/`-cp` flag in `args` and return its
+   *  value (the next element). Returns `None` if no such flag is
+   *  present or it has no value.
+   */
+  private def extractClasspathArg(args: Array[String]): Option[String] =
+    val i = args.indexWhere(a => a == "-classpath" || a == "-cp")
+    if i < 0 || i + 1 >= args.length then None
+    else Some(args(i + 1))
+
+  /** Return `args` with the first `-classpath`/`-cp` flag and its
+   *  value removed. Used together with `extractClasspathArg` so we
+   *  can rewrite the classpath exactly once via the settings API
+   *  without `Driver.setup` then trying to re-set it from CLI args.
+   */
+  private def stripClasspathFlag(args: Array[String]): Array[String] =
+    val i = args.indexWhere(a => a == "-classpath" || a == "-cp")
+    if i < 0 then args
+    else if i + 1 >= args.length then args.take(i)
+    else args.take(i) ++ args.drop(i + 2)
 
   private def compileSource(
       source: String,
       classLoader: ClassLoader,
       outDir: AbstractFile,
       replOutDir: AbstractFile,
-      compilerSettings: Array[String]
+      compilerSettings: Array[String],
+      forceNoIndent: Boolean
   ): Either[Seq[String], Unit] =
-    val driver = new EvalDriver(classLoader)
-    driver.setup(compilerSettings, driver.initCtx) match
+    val driver = new EvalDriver
+    val (classpath, settingsWithoutCp) = composeClasspath(compilerSettings, classLoader)
+    val initCtx = driver.initCtx
+    initCtx.settings.classpath.update(classpath)(using initCtx)
+    driver.setup(settingsWithoutCp, initCtx) match
       case Some((_, ctx0)) =>
         val storeReporter = new StoreReporter(null)
-        val freshCtx = ctx0.fresh
+        // The wrapper body comes from the pretty-printer when the
+        // rewriter actually applied changes. The printer emits braces
+        // correctly but its leading-whitespace widths don't always
+        // satisfy the indent-significant parser ("Indentation width of
+        // current line N falls between previous widths …"). When
+        // that's the case force `-no-indent` so the parser trusts
+        // braces; otherwise leave indent-significant parsing on so
+        // intentionally indent-only Scala 3 bodies still work.
+        val withIndentSetting =
+          if forceNoIndent then ctx0.fresh.setSetting(ctx0.settings.noindent, true)
+          else ctx0.fresh
+        val freshCtx = withIndentSetting
           .setSetting(ctx0.settings.outputDir, outDir)
           .setReporter(storeReporter)
         // Splice the running REPL's output dir onto the compile-time

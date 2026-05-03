@@ -196,27 +196,22 @@ class EvalTypeAnnotate extends Phase:
 
     private def isEvalBindCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
-      val name = if sym != NoSymbol then sym.name.toString else ""
       sym != NoSymbol
-        && (name == "bind" || name == "bindVar" || name == "bindGiven")
+        && EvalNames.BindLike(sym.name.toString)
         && sym.owner == EvalTypeAnnotate.evalModuleClass
 
+    /** Recognise the typed call site of `eval` / `evalSafe` / `agent`
+     *  / `agentSafe`. See [[EvalNames]] for the shared name list and
+     *  the rationale behind the asymmetric owner check (Eval-owned
+     *  for `eval`/`evalSafe`; name-only for `agent`/`agentSafe`).
+     */
     private def isEvalCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
-      val name = if sym != NoSymbol then sym.name.toString else ""
-      sym != NoSymbol && {
-        // Eval and evalSafe live on the Eval module; the
-        // EvalTypeAnnotate phase reaches them via that owner check
-        // because they share a fixed location.
-        val ownedByEval =
-          (name == "eval" || name == "evalSafe") &&
-          sym.owner == EvalTypeAnnotate.evalModuleClass
-        // `agent` / `agentSafe` are user-defined helpers (LLMChat.scala)
-        // that share `eval`'s synthetic-argument shape. Recognise
-        // them by name regardless of owner, so the expected-type
-        // annotation flows into them too.
-        ownedByEval || name == "agent" || name == "agentSafe"
-      }
+      if sym == NoSymbol then return false
+      val name = sym.name.toString
+      val ownedByEval =
+        EvalNames.EvalOwned(name) && sym.owner == EvalTypeAnnotate.evalModuleClass
+      ownedByEval || (EvalNames.EvalLike(name) && !EvalNames.EvalOwned(name))
 
     /** Extract the `T` from a typed `eval[T](...)` `fun` tree. The
      *  parser-stage rewriter never strips the user's `TypeApply`, so

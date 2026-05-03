@@ -834,7 +834,13 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
         toText(pats, ", ") ~ optAscription(tpt) ~ optText(rhs)(" = " ~ _)
       case ParsedTry(expr, handler, finalizer) =>
         changePrec(GlobalPrec) {
-          keywordStr("try ") ~ toText(expr) ~ " " ~ keywordStr("catch") ~ " {" ~ toText(handler) ~ "}" ~ optText(finalizer)(keywordStr(" finally ") ~ _)
+          // The parser leaves `handler` as `EmptyTree` for a `try ... finally`
+          // with no `catch` clause. Skip the catch entirely in that case;
+          // emitting `catch {<empty>}` would not re-parse.
+          val handlerText =
+            if handler.isEmpty then Text()
+            else " " ~ keywordStr("catch") ~ " {" ~ toText(handler) ~ "}"
+          keywordStr("try ") ~ toText(expr) ~ handlerText ~ optText(finalizer)(keywordStr(" finally ") ~ _)
         }
       case Number(digits, kind) =>
         digits

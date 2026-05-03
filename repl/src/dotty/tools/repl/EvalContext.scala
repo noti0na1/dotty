@@ -53,4 +53,4 @@ object EvalContext:
   /** The marker the parser-stage rewriter substitutes into the
    *  `enclosingSource` text at each eval call site.
    */
-  val placeholder: String = "__evalBodyPlaceholder_d3edfb9d__"
+  val placeholder: String = "__evalBodyPlaceholder__"
