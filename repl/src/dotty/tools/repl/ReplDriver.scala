@@ -79,9 +79,18 @@ case class State(objectIndex: Int,
 
 /** Main REPL instance, orchestrating input, compilation and presentation */
 class ReplDriver(settings: Array[String],
-                 out: PrintStream = System.out,
+                 out0: PrintStream = System.out,
                  classLoader: Option[ClassLoader] = None,
                  extraPredef: String = "") extends Driver:
+
+  /** The PrintStream the REPL writes everything to. Wraps the
+   *  caller-supplied `out0` in a tee so `ReplHistory.captureLine` can
+   *  intercept per-line output for the in-session history without
+   *  losing live forwarding to the user. All internal `out.println`
+   *  call sites continue to compile unchanged.
+   */
+  private[repl] val out: ReplHistory.TeePrintStream =
+    ReplHistory.TeePrintStream(out0)
 
   /** Overridden to `false` in order to not have to give sources on the
    *  commandline
@@ -429,7 +438,21 @@ class ReplDriver(settings: Array[String],
         .getOrElse(Nil)
   end completions
 
-  protected def interpret(res: ParseResult)(using state: State): State = {
+  protected def interpret(res: ParseResult)(using state: State): State =
+    val historyFile = state.context.settings.XreplHistoryFile.value(using state.context)
+    ReplHistory.captureLine(out, historyFile, parseResultInput(res))(interpretImpl(res))
+
+  /** The raw input text associated with `res`, for history bookkeeping.
+   *  Returns "" for non-input results (Newline, SigKill) so they aren't
+   *  recorded.
+   */
+  private def parseResultInput(res: ParseResult): String = res match
+    case p: Parsed       => p.source.content().mkString
+    case s: SyntaxErrors => s.sourceCode
+    case _: Command      => "" // command-name itself is not surfaced; history records its output
+    case _               => ""
+
+  private def interpretImpl(res: ParseResult)(using state: State): State = {
     currentState = state
     val newState = res match {
       case parsed: Parsed if parsed.source.content().mkString.startsWith("//>") =>

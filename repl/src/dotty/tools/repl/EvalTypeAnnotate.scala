@@ -204,9 +204,19 @@ class EvalTypeAnnotate extends Phase:
     private def isEvalCall(fun: Tree)(using Context): Boolean =
       val sym = fun.symbol
       val name = if sym != NoSymbol then sym.name.toString else ""
-      sym != NoSymbol
-        && (name == "eval" || name == "evalSafe")
-        && sym.owner == EvalTypeAnnotate.evalModuleClass
+      sym != NoSymbol && {
+        // Eval and evalSafe live on the Eval module; the
+        // EvalTypeAnnotate phase reaches them via that owner check
+        // because they share a fixed location.
+        val ownedByEval =
+          (name == "eval" || name == "evalSafe") &&
+          sym.owner == EvalTypeAnnotate.evalModuleClass
+        // `agent` / `agentSafe` are user-defined helpers (LLMChat.scala)
+        // that share `eval`'s synthetic-argument shape. Recognise
+        // them by name regardless of owner, so the expected-type
+        // annotation flows into them too.
+        ownedByEval || name == "agent" || name == "agentSafe"
+      }
 
     /** Extract the `T` from a typed `eval[T](...)` `fun` tree. The
      *  parser-stage rewriter never strips the user's `TypeApply`, so

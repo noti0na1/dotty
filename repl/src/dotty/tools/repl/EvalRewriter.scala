@@ -332,14 +332,26 @@ object EvalRewriter:
       }
       (out, acc.toList)
 
-    /** Extract the identifier names a for-comprehension pattern binds.
-     *  Currently only handles `Ident` patterns (`for x <- xs`); other
-     *  shapes (tuple destructuring, case patterns) return Nil and
-     *  silently miss being captured into the body's eval bindings.
+    /** Identifier names a pattern binds. Used for both for-comprehension
+     *  generators (`for x <- xs`, `for (a, b) <- xs`) and case-lambda /
+     *  match patterns (`{ case (file, _) => ... }`, `case Some(x) => ...`).
+     *  Recurses into the common pattern shapes the parser produces.
      */
     private def extractPatNames(pat: Tree)(using Context): List[String] = pat match
       case Ident(name) if name.toString.nonEmpty && name.toString != "_" =>
         List(name.toString)
+      case Bind(name, body) =>
+        val n = name.toString
+        val rest = extractPatNames(body)
+        if n.nonEmpty && n != "_" then n :: rest else rest
+      case Tuple(trees) => trees.flatMap(extractPatNames)
+      case Apply(_, args) => args.flatMap(extractPatNames)
+      case Typed(expr, _) => extractPatNames(expr)
+      case Parens(t) => extractPatNames(t)
+      case InfixOp(left, _, right) => extractPatNames(left) ++ extractPatNames(right)
+      case Alternative(trees) =>
+        // Each branch must bind the same names by Scala's rules; pick from the first.
+        trees.headOption.toList.flatMap(extractPatNames)
       case _ => Nil
 
     /** The class's type parameters, harvested from the primary
@@ -501,6 +513,24 @@ object EvalRewriter:
         // directly because the base `TreeCopier` we inherit doesn't expose it.
         untpd.cpy.Function(fn)(newArgs, newBody)
 
+      // Case lambda / match expression. `{ case (file, _) => body }` parses
+      // as `Match(EmptyTree, List(CaseDef(...)))`. Each case's pattern-bound
+      // names are visible in that case's guard and body, so an `agent` /
+      // `eval` call inside the body can capture them. We don't widen the
+      // scope across cases — each case is its own fresh binding frame.
+      case mt @ Match(selector, cases) =>
+        val newSelector = transform(selector)
+        val newCases = cases.mapConserve {
+          case cd @ CaseDef(pat, guard, body) =>
+            val patNames = extractPatNames(pat).map(n => CapturedName(n, isVar = false))
+            val newPat = transform(pat)
+            val newGuard = withScope(patNames)(transform(guard))
+            val newBody = withScope(patNames)(transform(body))
+            cpy.CaseDef(cd)(newPat, newGuard, newBody)
+          case other => transform(other)
+        }
+        cpy.Match(mt)(newSelector, newCases.asInstanceOf[List[CaseDef]])
+
       // Block: process stats in order, accumulating names from each
       // val/var/def/given so subsequent stats and the trailing
       // expression see them. Defs are captured by eta-expansion (see
@@ -608,19 +638,31 @@ object EvalRewriter:
       // and an empty bindings array) so the post-typer phase has a
       // uniform shape to recognise.
       case app @ Apply(fn, args) if isEvalCall(fn) =>
-        val captured = currentBindings
-        val newArgs = args.mapConserve(transform)
-        val enclosingSrc = computeEnclosingSource(app.span)
-        val enclosingTypeParams = currentTypeParamsString
-        if captured.exists(_.isVar) then
-          buildVarAwareCall(app, fn, newArgs, captured, enclosingSrc, enclosingTypeParams)
+        // Don't double-rewrite. If the call already has at least 5
+        // positional arguments it's either:
+        //   - a call we already rewrote (5 args = code, bindings,
+        //     expectedType, enclosingSource, enclosingTypeParams), or
+        //   - user/library code calling the explicit form on purpose
+        //     (e.g. `agent`'s body forwarding to `agentSafe` with all
+        //     synthetic args spelled out, `Eval.evalSafe(...)` with a
+        //     full arg list, etc).
+        // Either way, appending another set of synthetic args would
+        // mangle the signature; just descend into the children.
+        if args.length >= 5 then super.transform(app)
         else
-          val bindArgs = captured.map(c => buildBind(c, app.span))
-          val arrayArg = buildArray(bindArgs, app.span)
-          val tpeLit = Literal(Constant("")).withSpan(app.span)
-          val srcLit = Literal(Constant(enclosingSrc)).withSpan(app.span)
-          val tpsLit = Literal(Constant(enclosingTypeParams)).withSpan(app.span)
-          cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit :+ tpsLit)
+          val captured = currentBindings
+          val newArgs = args.mapConserve(transform)
+          val enclosingSrc = computeEnclosingSource(app.span)
+          val enclosingTypeParams = currentTypeParamsString
+          if captured.exists(_.isVar) then
+            buildVarAwareCall(app, fn, newArgs, captured, enclosingSrc, enclosingTypeParams)
+          else
+            val bindArgs = captured.map(c => buildBind(c, app.span))
+            val arrayArg = buildArray(bindArgs, app.span)
+            val tpeLit = Literal(Constant("")).withSpan(app.span)
+            val srcLit = Literal(Constant(enclosingSrc)).withSpan(app.span)
+            val tpsLit = Literal(Constant(enclosingTypeParams)).withSpan(app.span)
+            cpy.Apply(app)(fn, newArgs :+ arrayArg :+ tpeLit :+ srcLit :+ tpsLit)
 
       case _ => super.transform(tree)
     end transform
@@ -826,7 +868,17 @@ object EvalRewriter:
       case _ => false
 
     private def isEvalName(name: String): Boolean =
-      name == "eval" || name == "evalSafe"
+      // `eval` / `evalSafe` are the throwing / non-throwing forms.
+      // `agent` / `agentSafe` are LLM-driven generators (defined in
+      // user code, e.g. LLMChat.scala) that share the same
+      // synthetic-argument shape: bindings, expectedType,
+      // enclosingSource, enclosingTypeParams. The rewriter treats
+      // them identically — capturing the same context — so the
+      // user's `agent[T]("task")` call gets the same binding /
+      // source / type-param info appended that an `eval[T](code)`
+      // call would.
+      name == "eval" || name == "evalSafe" ||
+      name == "agent" || name == "agentSafe"
 
     private def isEvalQualifier(t: Tree): Boolean = t match
       case Ident(n) => n.toString == "Eval"

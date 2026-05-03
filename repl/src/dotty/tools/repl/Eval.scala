@@ -737,7 +737,8 @@ object Eval:
       code
 
   private def mightContainNestedEval(code: String): Boolean =
-    code.contains("eval(") || code.contains("eval[")
+    val names = Array("eval", "evalSafe", "agent", "agentSafe")
+    names.exists(n => code.contains(s"$n(") || code.contains(s"$n["))
 
   /** When the bindings include the synthetic `__this__` (i.e. the
    *  rewriter captured the outer-class instance for an eval call
@@ -886,6 +887,32 @@ object Eval:
       c
   end EvalOutputClassLoader
 
+  /** Compiler used by `evalIsolated` to compile the wrapper module. Mirrors
+   *  the relevant slice of `ReplCompiler`'s phase list: we need the standard
+   *  frontend plus `EvalTypeAnnotate` so that *nested* `eval[T]` / `agent[T]`
+   *  calls inside the body get their expected-type sentinel filled from the
+   *  typed `[T]` argument (just like the REPL line itself does). Without
+   *  this phase the inner call is compiled with `expectedType = ""`, so the
+   *  inner wrapper's return type defaults to `Any`, the inner body is
+   *  type-erased to `Any`, and the prompt sent to the LLM omits the type
+   *  pin — losing the very signal that lets the model produce a typed
+   *  expression.
+   */
+  private class EvalCompiler extends dotc.Compiler:
+    import dotc.core.Phases.Phase
+    import dotc.typer.TyperPhase
+
+    // Splice EvalTypeAnnotate immediately after Typer in the standard
+    // phase list. Keeping the rest of the list intact preserves error
+    // checks (YCheckPositions, etc.) the wrapper compile relies on.
+    override protected def frontendPhases: List[List[Phase]] =
+      super.frontendPhases.flatMap { group =>
+        if group.exists(_.isInstanceOf[TyperPhase]) then
+          List(group, List(new EvalTypeAnnotate))
+        else List(group)
+      }
+  end EvalCompiler
+
   private class EvalDriver(classLoader: ClassLoader) extends Driver:
     override def sourcesRequired: Boolean = false
 
@@ -929,7 +956,7 @@ object Eval:
             freshCtx.platform.classPath(using freshCtx)
           )(using freshCtx)
         try
-          val compiler = new dotty.tools.dotc.Compiler
+          val compiler = new EvalCompiler
           val run = compiler.newRun(using freshCtx)
           run.compileFromStrings(source :: Nil)
           if storeReporter.hasErrors then

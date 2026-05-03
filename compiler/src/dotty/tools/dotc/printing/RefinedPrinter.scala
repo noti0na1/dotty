@@ -737,12 +737,29 @@ class RefinedPrinter(_ctx: Context) extends PlainPrinter(_ctx) {
       case SymbolLit(str) =>
         "'" + str
       case InterpolatedString(id, segments) =>
-        def strText(str: Literal) = escapedString(str.const.stringValue)
-        def segmentText(segment: Tree): Text = segment match {
-          case Thicket(List(str: Literal, expr)) => strText(str) ~ "{" ~ toTextGlobal(expr) ~ "}"
+        // Render as a single `Str` so the layout algorithm can't split the
+        // string literal across lines (raw newlines inside the quotes would
+        // corrupt the literal). Each `${expr}` segment renders the inner
+        // expression with unbounded width, so any internal layout breaks
+        // collapse before they reach the surrounding quotes.
+        //
+        // The parser produces a `Block(Nil, e)` wrapper for `${ e }` and a
+        // bare `Ident` for `$id`; we use that distinction to choose between
+        // `${...}` (general expression) and `$id` (single identifier) so the
+        // round-trip of `s"... $name ..."` doesn't gain a redundant brace
+        // pair. Blocks with a single trailing statement render as just the
+        // statement to avoid `${{ x }}` styling.
+        def strText(str: Literal): String = escapedString(str.const.stringValue)
+        def exprText(expr: Tree): String = expr match
+          case Block(Nil, inner) => toTextGlobal(inner).mkString(Int.MaxValue)
+          case _ => toTextGlobal(expr).mkString(Int.MaxValue)
+        def segmentText(segment: Tree): String = segment match
+          case Thicket(List(str: Literal, ident: Ident)) =>
+            strText(str) + "$" + ident.name.toString
+          case Thicket(List(str: Literal, expr)) =>
+            strText(str) + "${" + exprText(expr) + "}"
           case str: Literal => strText(str)
-        }
-        toText(id) ~ "\"" ~ Text(segments map segmentText, "") ~ "\""
+        Str(toText(id).mkString(Int.MaxValue) + "\"" + segments.map(segmentText).mkString + "\"")
       case fn @ Function(args, body) =>
         var implicitSeen: Boolean = false
         var isGiven: Boolean = false
