@@ -311,6 +311,82 @@ object Eval:
       )
     a
 
+  /** Cache key for a compiled wrapper. Two calls with the same key
+   *  produce bit-identical wrapper bytecode (modulo the UUID class
+   *  name), so the second can reuse the first's compiled `__run__`.
+   *
+   *  The key intentionally includes the resolved `bindingShape` (the
+   *  *types* the wrapper signature was rendered with), not just the
+   *  binding names: a body like `eval("z + 1")` compiles to a
+   *  different wrapper when `z` is `Int` vs. `String`. `enclosingSource`
+   *  is in the key so two structurally similar call sites with
+   *  different lexical contexts don't collide.
+   *
+   *  `sessionLoader` scopes entries to the running REPL session.
+   *  Two distinct sessions can have identical `replWrapperImports`
+   *  values yet wholly different `rs$line$N` classfile contents
+   *  (each test in `DynamicEvalTests` is its own session). Comparing
+   *  classloaders by reference identity (the default for `AnyRef`
+   *  case class fields) is exactly what we want: one cache namespace
+   *  per session, no cross-session bleed.
+   */
+  private case class WrapperKey(
+      code: String,
+      enclosingSource: String,
+      expectedType: String,
+      enclosingTypeParams: String,
+      bindingShape: String,
+      importsKey: String,
+      settingsKey: String,
+      sessionLoader: ClassLoader
+  )
+
+  /** Cached output of a successful wrapper compile. The classloader
+   *  is held by strong reference so the wrapper class can't be
+   *  unloaded while the entry lives in the cache.
+   */
+  private final class CompiledWrapper(
+      val module: AnyRef,
+      val method: java.lang.reflect.Method,
+      val classLoader: ClassLoader
+  )
+
+  /** Maximum number of distinct call sites we keep wrappers for.
+   *  Each entry pins one classloader + one wrapper class, so this
+   *  also bounds metaspace growth from caching.
+   */
+  private val cacheCapacity = 128
+
+  /** Access-order LRU. `LinkedHashMap` with `accessOrder=true` reorders
+   *  on every `get`, so all access must be synchronised; the
+   *  `synchronizedMap` wrapper handles per-call locking, which is
+   *  enough since we only do single `get` and `put` operations.
+   */
+  private val wrapperCache: java.util.Map[WrapperKey, Either[CompileFailure, CompiledWrapper]] =
+    java.util.Collections.synchronizedMap(
+      new java.util.LinkedHashMap[WrapperKey, Either[CompileFailure, CompiledWrapper]](16, 0.75f, true) {
+        override def removeEldestEntry(
+            eldest: java.util.Map.Entry[WrapperKey, Either[CompileFailure, CompiledWrapper]]
+        ): Boolean = size() > cacheCapacity
+      }
+    )
+
+  /** Discard all cached wrappers. Useful for `:reset` and tests.
+   *  Cached classloaders become unreachable and eligible for GC.
+   */
+  def clearCache(): Unit = wrapperCache.clear()
+
+  private def bindingShapeOf(bindings: Array[Binding], bindingTypes: Array[String]): String =
+    val sb = new StringBuilder
+    var i = 0
+    while i < bindings.length do
+      if i > 0 then sb.append('|')
+      val b = bindings(i)
+      sb.append(b.name).append(':').append(bindingTypes(i))
+        .append(':').append(b.isVar).append(':').append(b.isGiven)
+      i += 1
+    sb.toString
+
   /** Compile `code` against `classLoader`'s classpath using a fresh,
    *  standalone Driver, with each `Binding` exposed as a method parameter
    *  whose declared type is recovered from its runtime `Class`. Loads
@@ -321,6 +397,12 @@ object Eval:
    *  user-defined symbols: `replOutDir` is added to the compiler's
    *  classpath so symbols in `rs$line$N` are resolvable, and the import
    *  statements bring those symbols into the body's lexical scope.
+   *
+   *  Wrapper bytecode is cached by `WrapperKey` so a tight loop
+   *  (`xs.map(z => eval("z+1"))`) compiles once and dispatches via
+   *  reflection on subsequent iterations. Caching is skipped when
+   *  `enclosingSource` is empty: direct callers and runtime-rewritten
+   *  nested evals don't have a tight enough discriminator.
    */
   def evalIsolated(
       code: String,
@@ -339,6 +421,71 @@ object Eval:
     // file is written below if the verify or wrapper compile fails.
     // Timestamp is shared across the three files of a single call.
     val logTimestamp = if evalLogDir.nonEmpty then writeEvalLogStart(evalLogDir, enclosingSource, code) else ""
+
+    // Pre-compute the source-level type name for each binding once.
+    // Prefer the typer-supplied `sourceType` (filled in by the
+    // `EvalTypeAnnotate` phase). When that's empty, fall back to
+    // walking the runtime `Class` of the captured value. For vars the
+    // fallback path also pins the cell's inner type for both the
+    // parameter signature and the body-local var declaration, so a
+    // racing write between the two reads can't desynchronise them.
+    //
+    // Computed up front because `bindingTypes` is part of the wrapper
+    // cache key: two calls with the same source but different captured
+    // types compile to different wrappers.
+    val bindingTypes: Array[String] = bindings.map { b =>
+      if b.sourceType.nonEmpty then b.sourceType
+      else if b.isVar then
+        val v = b.value.asInstanceOf[VarCell[?]].get()
+        if v == null then "Any" else classToTypeName(v.getClass)
+      else if b.value == null then "Any"
+      else classToTypeName(b.value.getClass)
+    }
+
+    // Split bindings into the regular positional clause and a trailing
+    // `using` clause for given bindings. Givens move to the using clause
+    // so `summon[T]` inside the eval body resolves against them. The
+    // wrapper compiles fine with an empty using clause, so we emit one
+    // unconditionally when any given is present.
+    val plainBindings = bindings.iterator.zipWithIndex.filter(!_._1.isGiven).toArray
+    val givenBindings = bindings.iterator.zipWithIndex.filter(_._1.isGiven).toArray
+
+    // Cache lookup. We cache wrapper bytecode keyed on everything that
+    // affects compilation output: the body, the lexical context
+    // (`enclosingSource`), the type pin, the resolved binding shape,
+    // and a fingerprint of the session-level imports + compiler
+    // settings. Two calls with the same key produce identical wrappers
+    // (modulo the UUID-named module), so the second can reuse the
+    // first's compiled `__run__`. The common motivating case is a
+    // tight loop like `xs.map(z => eval[Int]("z + 1"))`: same call
+    // site, same body, just different `z` values.
+    //
+    // Skip caching when `enclosingSource` is empty: that's either a
+    // direct caller (no rewriter) or a runtime-rewritten nested eval,
+    // and we don't have a tight enough discriminator to cache safely.
+    val cacheKey: WrapperKey | Null =
+      if enclosingSource.isEmpty then null
+      else WrapperKey(
+        code = code,
+        enclosingSource = enclosingSource,
+        expectedType = expectedType,
+        enclosingTypeParams = enclosingTypeParams,
+        bindingShape = bindingShapeOf(bindings, bindingTypes),
+        importsKey = replWrapperImports.mkString("\n"),
+        settingsKey = compilerSettings.mkString(" "),
+        sessionLoader = classLoader
+      )
+
+    if cacheKey != null then
+      wrapperCache.get(cacheKey) match
+        case null =>
+          // miss: fall through to the compile path
+        case Left(failure) =>
+          if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, failure)
+          return Left(failure)
+        case Right(compiled) =>
+          return invokeWrapper(compiled, plainBindings, givenBindings)
+
     val outDir = new VirtualDirectory("<eval-output>")
     val wrapperName = s"__EvalWrapper_${java.util.UUID.randomUUID.toString.replace('-', '_')}"
 
@@ -367,32 +514,9 @@ object Eval:
       verifyEnclosing(code, enclosingSource, classLoader, replOutDir, replWrapperImports, compilerSettings) match
         case Some(f) =>
           if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, f)
+          if cacheKey != null then wrapperCache.put(cacheKey, Left(f))
           return Left(f)
         case None =>
-
-    // Pre-compute the source-level type name for each binding once.
-    // Prefer the typer-supplied `sourceType` (filled in by the
-    // `EvalTypeAnnotate` phase). When that's empty, fall back to
-    // walking the runtime `Class` of the captured value. For vars the
-    // fallback path also pins the cell's inner type for both the
-    // parameter signature and the body-local var declaration, so a
-    // racing write between the two reads can't desynchronise them.
-    val bindingTypes: Array[String] = bindings.map { b =>
-      if b.sourceType.nonEmpty then b.sourceType
-      else if b.isVar then
-        val v = b.value.asInstanceOf[VarCell[?]].get()
-        if v == null then "Any" else classToTypeName(v.getClass)
-      else if b.value == null then "Any"
-      else classToTypeName(b.value.getClass)
-    }
-
-    // Split bindings into the regular positional clause and a trailing
-    // `using` clause for given bindings. Givens move to the using clause
-    // so `summon[T]` inside the eval body resolves against them. The
-    // wrapper compiles fine with an empty using clause, so we emit one
-    // unconditionally when any given is present.
-    val plainBindings = bindings.iterator.zipWithIndex.filter(!_._1.isGiven).toArray
-    val givenBindings = bindings.iterator.zipWithIndex.filter(_._1.isGiven).toArray
 
     def renderParam(b: Binding, i: Int): String =
       if b.isVar then
@@ -496,6 +620,7 @@ object Eval:
       case Left(errs) =>
         val failure = new CompileFailure(errs.toArray, source)
         if logTimestamp.nonEmpty then writeEvalLogError(evalLogDir, logTimestamp, failure)
+        if cacheKey != null then wrapperCache.put(cacheKey, Left(failure))
         return Left(failure)
       case Right(()) =>
 
@@ -513,25 +638,37 @@ object Eval:
     val method = cls.getMethods.find(_.getName == "__run__").getOrElse(
       throw new RuntimeException("__run__ method not found in compiled wrapper")
     )
-    // Args must match the wrapper signature: regular params first,
-    // then the using-clause's given bindings (Method.invoke flattens
-    // both clauses into a single positional array).
+    val compiled = new CompiledWrapper(module, method, cl)
+    if cacheKey != null then wrapperCache.put(cacheKey, Right(compiled))
+    invokeWrapper(compiled, plainBindings, givenBindings)
+  end evalIsolated
+
+  /** Build the positional argument array and invoke the wrapper's
+   *  `__run__`. Shared between the cache-miss and cache-hit paths so
+   *  argument layout (plain bindings first, then givens, mirroring
+   *  the wrapper signature) lives in exactly one place.
+   *
+   *  Body runtime exceptions (including a *nested* eval throwing
+   *  `EvalCompileException`) propagate out as Java exceptions so
+   *  callers can distinguish them from this call's own compile
+   *  failure. Only the wrapper-compile and verify-compile produce
+   *  `Left(CompileFailure)`.
+   */
+  private def invokeWrapper(
+      compiled: CompiledWrapper,
+      plainBindings: Array[(Binding, Int)],
+      givenBindings: Array[(Binding, Int)]
+  ): Either[CompileFailure, Any] =
     val args =
       (plainBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])
         ++ givenBindings.iterator.map(_._1.value.asInstanceOf[AnyRef])).toArray
-    // Body runtime exceptions (including a *nested* eval throwing
-    // `EvalCompileException`) propagate out of `evalIsolated` as Java
-    // exceptions so callers can distinguish them from this call's own
-    // compile failure. Only the wrapper-compile and verify-compile
-    // produce `Left(CompileFailure)`.
-    try Right(method.invoke(module, args*))
+    try Right(compiled.method.invoke(compiled.module, args*))
     catch case e: java.lang.reflect.InvocationTargetException =>
       // Preserve the user-visible cause; reflection wraps it in an ITE
       // whose `getCause` is normally non-null, but we guard against the
       // pathological case where it isn't.
       val cause = e.getCause
       if cause != null then throw cause else throw e
-  end evalIsolated
 
   /** Write the per-invocation log files for an eval call:
    *
