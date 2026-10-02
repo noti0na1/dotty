@@ -487,7 +487,6 @@ class CheckCaptures extends Recheck, SymTransformer:
     /** Check subcapturing `cs1 <: cs2`, report error on failure */
     def checkSubset(cs1: CaptureSet, cs2: CaptureSet, pos: SrcPos,
         owner: Symbol = NoSymbol, provenance: => String = "")(using Context) =
-      val cs1description = cs1.description
       checkOK(
           TypeComparer.compareResult(cs1.subCaptures(cs2)),
           cs1, cs2, owner, provenance, pos)

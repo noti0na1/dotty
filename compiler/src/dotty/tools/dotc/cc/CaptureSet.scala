@@ -11,7 +11,7 @@ import annotation.constructorOnly
 import annotation.internal.sharable
 import reporting.trace
 import reporting.Message.Note
-import printing.{Showable, Printer}
+import printing.{Showable, Printer, RefinedPrinter}
 import printing.Texts.*
 import util.{SimpleIdentitySet, MutableIdentitySet, Property, EqHashMap}
 import scala.collection.{mutable, immutable}
@@ -555,17 +555,20 @@ sealed abstract class CaptureSet extends Showable:
    */
   protected def propagateSolved(provisional: Boolean)(using Context): Unit = ()
 
-  /** This capture set with a description that tells where it comes from */
-  def withDescription(description: String): CaptureSet
+  /** This capture set with a description that tells where it comes from.
+   *  Descriptions are only needed for diagnostics, so they are computed
+   *  on demand in the context where they are requested.
+   */
+  def withDescription(description: Context ?=> String): CaptureSet
 
   /** The provided description (set via `withDescription`) for this capture set or else "" */
-  def description: String
+  def description(using Context): String
 
   /** More info enabled by -Y flags */
   def optionalInfo(using Context): String = ""
 
   override def toText(printer: Printer): Text =
-    printer.toTextCaptureSet(this) ~~ description
+    printer.toTextCaptureSet(this) ~~ description(using printer.printerContext)
 
   /** Apply function `f` to the elements. Typically used for printing.
    *  Overridden in HiddenSet so that we don't run into infinite recursions
@@ -573,6 +576,14 @@ sealed abstract class CaptureSet extends Showable:
   def processElems[T](f: Refs => T): T = f(elems)
 
 object CaptureSet:
+
+  /** Render a capture set description. Descriptions are rendered with a standard
+   *  printer, so that names appearing in them don't take part in the disambiguation
+   *  of names in an enclosing error message.
+   */
+  private def inDescriptionContext(op: Context ?=> String)(using Context): String =
+    op(using ctx.fresh.setPrinterFn(RefinedPrinter(_)))
+
   type Refs = SimpleIdentitySet[Capability]
   type Vars = SimpleIdentitySet[Var]
   type Deps = MutableIdentitySet[CaptureSet]
@@ -613,7 +624,7 @@ object CaptureSet:
     cs
 
   class EmptyOfBoxed(val tp1: Type, val tp2: Type) extends Const(emptyRefs):
-    override def description = "{} of boxed mismatch"
+    override def description(using Context) = "{} of boxed mismatch"
     override def toString = "{} of boxed mismatch"
 
   /** The universal capture set `{caps.any}` */
@@ -638,7 +649,7 @@ object CaptureSet:
     if elems.isEmpty then empty else Const(elems)
 
   /** The subclass of constant capture sets with given elements `elems` */
-  class Const private[CaptureSet] (val elems: Refs, descr: String = "") extends CaptureSet:
+  class Const private[CaptureSet] (val elems: Refs, descr: Context ?=> String = "") extends CaptureSet:
     def isConst(using Context) = true
     def isAlwaysEmpty(using Context) = elems.isEmpty
     def isProvisionallySolved(using Context) = false
@@ -657,7 +668,7 @@ object CaptureSet:
 
     def upperApprox(origin: CaptureSet)(using Context): CaptureSet = this
 
-    def withDescription(description: String): Const = Const(elems, description)
+    def withDescription(description: Context ?=> String): Const = Const(elems, description)
 
     def owner = NoSymbol
 
@@ -677,7 +688,7 @@ object CaptureSet:
         isComplete = true
       myMut
 
-    def description = descr
+    def description(using Context) = inDescriptionContext(descr)
 
     override def toString = elems.toString
   end Const
@@ -843,7 +854,13 @@ object CaptureSet:
       || super.tryClassifyAs(cls)
           && { narrowClassifier(cls); true }
 
-    var description: String = ""
+    /** The parts of the description of this set, in reverse order */
+    private var descriptionParts: List[Context => String] = Nil
+
+    def description(using Context): String =
+      if descriptionParts.isEmpty then ""
+      else inDescriptionContext:
+        descriptionParts.foldRight("")((part, acc) => acc.join(" and ", part(ctx)))
 
     private var myRepr: Name | Null = null
 
@@ -1010,8 +1027,8 @@ object CaptureSet:
     // See Config.checkSkippedMaps
     var skippedMaps: Set[TypeMap] = Set.empty
 
-    def withDescription(description: String): this.type =
-      this.description = this.description.join(" and ", description)
+    def withDescription(description: Context ?=> String): this.type =
+      descriptionParts = ((ctx: Context) => description(using ctx)) :: descriptionParts
       this
 
     /** A Var with the given elems and the same owner as this Var. Used for error diagnsotcis. */
@@ -1331,7 +1348,7 @@ object CaptureSet:
 
     //assert(id != 3)
 
-    description = i"of elements subsumed by an `any` in $initialOwner"
+    withDescription(i"of elements subsumed by an `any` in $initialOwner")
 
     /** Add element to hidden set. */
     def add(elem: Capability)(using ctx: Context, vs: VarState): Unit =
