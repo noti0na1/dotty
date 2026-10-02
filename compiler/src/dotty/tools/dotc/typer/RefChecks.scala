@@ -281,6 +281,13 @@ object RefChecks {
 
     // Disabled for capture checking since traits can get different parameter refinements
     def checkInheritedTraitParameters: Boolean = true
+
+    /** Check that concrete classes implement all their abstract members and that
+     *  their member types are consistent (checks 2 and 3 below, and `checkMemberTypesOK`).
+     *  These checks ignore capture sets, so they are disabled when override checks
+     *  are repeated during capture checking.
+     */
+    def checkConcreteClassMembers: Boolean = true
   end OverridingPairsChecker
 
   /** 1. Check all members of class `clazz` for overriding conditions.
@@ -945,20 +952,21 @@ object RefChecks {
             """Refining a basetype of a case class is not allowed.
               |This is a limitation that enables better GADT constraints in case class patterns""".stripMargin
         do report.errorOrMigrationWarning(withExplain, clazz.srcPos, MigrationVersion.Scala2to3)
-      checkNoAbstractMembers()
-      if (abstractErrors.isEmpty && concreteClassUnimplementedMethodError.isEmpty)
-        checkNoAbstractDecls(clazz)
+      if checker.checkConcreteClassMembers then
+        checkNoAbstractMembers()
+        if (abstractErrors.isEmpty && concreteClassUnimplementedMethodError.isEmpty)
+          checkNoAbstractDecls(clazz)
 
-      if abstractErrors.nonEmpty then
-        val msg = abstractErrorMessage
-        classErrorPositions.foreach(report.error(msg, _))
-      for
-        message <- concreteClassUnimplementedMethodError
-        pos <- classErrorPositions
-      do
-        report.error(message, pos)
+        if abstractErrors.nonEmpty then
+          val msg = abstractErrorMessage
+          classErrorPositions.foreach(report.error(msg, _))
+        for
+          message <- concreteClassUnimplementedMethodError
+          pos <- classErrorPositions
+        do
+          report.error(message, pos)
 
-      checkMemberTypesOK()
+        checkMemberTypesOK()
       checkCaseClassInheritanceInvariant()
     }
 

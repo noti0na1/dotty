@@ -2177,6 +2177,8 @@ class CheckCaptures extends Recheck, SymTransformer:
 
         override def checkInheritedTraitParameters: Boolean = false
 
+        override def checkConcreteClassMembers: Boolean = false
+
         /** Check that overrides don't override a normal parameter or method with a
          *  consume parameter or method
          */
