@@ -424,7 +424,9 @@ extension (tp: Type)
   def derivesFromCapability(using Context): Boolean = derivesFromCapTrait(defn.Caps_Capability)
   def derivesFromCapSet(using Context) = tp.derivesFrom(defn.Caps_CapSet)
 
-  def isArrayUnderStrictMut(using Context): Boolean = tp.classSymbol.isArrayUnderStrictMut
+  def isArrayUnderStrictMut(using Context): Boolean =
+    // Test `strictMutability` first since `classSymbol` can be expensive to compute, e.g. for union types
+    ccConfig.strictMutability && tp.classSymbol == defn.ArrayClass
 
   /** Drop @retains annotations everywhere */
   def dropAllRetains(using Context): Type = // TODO we should drop retains from inferred types before unpickling
