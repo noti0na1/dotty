@@ -605,6 +605,12 @@ extension (cls: ClassSymbol) {
       ccState.fieldsWithExplicitTypes             // pick fields with explicit types for classes in this compilation unit
         .getOrElse(cls, cls.info.decls.toList)  // pick all symbols in class scope for other classes
 
+    // Both `impliedClassifier` and `contributingFields` recurse over parent classes.
+    // Results are memoized since base classes are typically reachable through many
+    // different paths in the inheritance graph.
+    val impliedClassifiers = util.EqHashMap[Symbol, Symbol]()
+    val contributingFieldsOf = util.EqHashMap[Symbol, List[Symbol]]()
+
     /** The implied classifier of the LocalCap of the class instance, derived from
      *    - the classifiers of the LocalCaps in the span capture sets of all fields
      *    - the implied classifiers of the parent classes
@@ -614,23 +620,33 @@ extension (cls: ClassSymbol) {
      */
     def impliedClassifier(cls: Symbol): Symbol = cls match
       case cls: ClassSymbol =>
-        val fieldClassifiers =
-          knownFields(cls).flatMap(classifiersOfLocalCapsInInfo)
-        val parentClassifiers =
-          cls.parentSyms.map(impliedClassifier).collect:
-            case cl: ClassSymbol => cl
-        val stateClassifiers =
-          if cls.typeRef.isStatefulType(varsOnly = true)
-          then cls.classifier :: Nil
-          else Nil
-        (fieldClassifiers ++ parentClassifiers ++ stateClassifiers).commonAncestor
+        impliedClassifiers.lookup(cls) match
+          case null =>
+            val fieldClassifiers =
+              knownFields(cls).flatMap(classifiersOfLocalCapsInInfo)
+            val parentClassifiers =
+              cls.parentSyms.map(impliedClassifier).collect:
+                case cl: ClassSymbol => cl
+            val stateClassifiers =
+              if cls.typeRef.isStatefulType(varsOnly = true)
+              then cls.classifier :: Nil
+              else Nil
+            val result = (fieldClassifiers ++ parentClassifiers ++ stateClassifiers).commonAncestor
+            impliedClassifiers(cls) = result
+            result
+          case result => result
       case _ => NoSymbol
 
     def contributingFields(cls: Symbol): List[Symbol] = cls match
       case cls: ClassSymbol =>
-        var ownFields = knownFields(cls).filter(memberCaps(_).nonEmpty)
-        val parentFields = cls.parentSyms.flatMap(contributingFields)
-        ownFields ++ parentFields
+        contributingFieldsOf.lookup(cls) match
+          case null =>
+            val ownFields = knownFields(cls).filter(memberCaps(_).nonEmpty)
+            val parentFields = cls.parentSyms.flatMap(contributingFields)
+            val result = ownFields ++ parentFields
+            contributingFieldsOf(cls) = result
+            result
+          case result => result
       case _ => Nil
 
     val impliedClr = impliedClassifier(cls)
