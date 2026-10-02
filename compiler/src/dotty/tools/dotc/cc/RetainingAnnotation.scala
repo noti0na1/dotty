@@ -34,8 +34,14 @@ class RetainingAnnotation(tpe: Type) extends CompactAnnotation(tpe) {
     case _ =>
       tp
 
+  /** Retains annotations are dropped when mapped if capture checking is not
+   *  enabled, or if we are past the capture checking phase. In the latter case,
+   *  the annotations are no longer relevant, as for `CaptureAnnotation.mapWith`.
+   */
   override def mapWith(tm: TypeMap)(using Context): Annotation =
-    if Feature.ccEnabledSomewhere then mapWithCtd(tm) else EmptyAnnotation
+    if Feature.ccEnabledSomewhere && ctx.phaseId <= Phases.checkCapturesPhaseId
+    then mapWithCtd(tm)
+    else EmptyAnnotation
 
   def isStrict(using Context): Boolean = symbol.isRetains
 
