@@ -281,6 +281,8 @@ object StdNames {
     final val RuntimeVisibleAnnotationATTR: N     = "RuntimeVisibleAnnotations"   // RetentionPolicy.RUNTIME
     final val RuntimeInvisibleAnnotationATTR: N   = "RuntimeInvisibleAnnotations" // RetentionPolicy.CLASS
     final val RuntimeParamAnnotationATTR: N       = "RuntimeVisibleParameterAnnotations" // RetentionPolicy.RUNTIME (annotations on parameters)
+    final val RuntimeVisibleTypeAnnotationATTR: N   = "RuntimeVisibleTypeAnnotations"   // RetentionPolicy.RUNTIME (annotations on types)
+    final val RuntimeInvisibleTypeAnnotationATTR: N = "RuntimeInvisibleTypeAnnotations" // RetentionPolicy.CLASS (annotations on types)
     final val ScalaATTR: N                        = "Scala"
     final val ScalaSignatureATTR: N               = "ScalaSig"
     final val TASTYATTR: N                        = "TASTY"

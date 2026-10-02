@@ -165,6 +165,10 @@ object ImplicitNullInterop:
   private def isNullableAnnot(annot: Annotation)(using Context): Boolean =
     defn.NullableAnnots.exists(annot.hasSymbol)
 
+  /** Is `annot` a nullness annotation, which is interpreted on types by `nullifyMember`? */
+  def isNullnessAnnot(annot: Annotation)(using Context): Boolean =
+    isNullableAnnot(annot) || isNotNullAnnot(annot)
+
   case class NullMapState(
     resultTypeMode: NullMode,
     currentTypeMode: NullMode
@@ -220,10 +224,12 @@ object ImplicitNullInterop:
           // Example: if `setNames` is a Java method with signature `void setNames(String... names)`,
           // then its Scala signature will be `def setNames(names: (String|Null)*): Unit`.
           // This is because `setNames(null)` passes as argument a single-element array containing the value `null`,
-          // and not a `null` array.
+          // and not a `null` array. Only a flexible type can wrap a repeated parameter type, even if
+          // the array is annotated as nullable.
           tp.tycon match
             case tycon: TypeRef =>
-              !(!ctx.flexibleTypes && tycon.isRef(defn.RepeatedParamClass) || defn.isTupleClass(tycon.symbol))
+              val isRepeatedParam = tycon.isRef(defn.RepeatedParamClass)
+              !(isRepeatedParam && state.currentTypeMode != NullMode.Flexible || defn.isTupleClass(tycon.symbol))
             case _ => true
         case _ => false
 
