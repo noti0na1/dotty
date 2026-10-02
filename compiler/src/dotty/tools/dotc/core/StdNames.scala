@@ -137,6 +137,7 @@ object StdNames {
     val OPS_PACKAGE: N                = "<special-ops>"
     val OVERLOADED: N                 = "<overloaded>"
     val PACKAGE: N                    = "package"
+    val PACKAGE_INFO: N               = "package-info"
     val ROOT: N                       = "<root>"
     val SPEC: N                       = "$spec"
     val SPECIALIZED_SUFFIX: N         = "$sp"
